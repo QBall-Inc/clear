@@ -1,0 +1,17 @@
+{
+  "name": "clear-framework",
+  "version": "0.1.0",
+  "description": "Context Layered Engineering for Agentic Resources - Persistent memory and intelligent context management for Claude Code sessions",
+  "author": {
+    "name": "CLEAR Framework Team"
+  },
+  "license": "MIT",
+  "keywords": [
+    "context-management",
+    "session-tracking",
+    "knowledge-base",
+    "workpackage",
+    "automation",
+    "handoff"
+  ]
+}
