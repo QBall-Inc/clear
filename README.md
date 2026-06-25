@@ -29,6 +29,10 @@
   <img src="https://img.shields.io/github/stars/QBall-Inc/clear?style=social" alt="GitHub stars" />
 </p>
 
+<p align="center">
+  <a href="https://qball-inc.github.io/clear/"><strong>&#9654; See how CLEAR works — interactive deck</strong></a>
+</p>
+
 ---
 
 > **For AI agents and LLMs:** start with **[`llms.txt`](llms.txt)** — a structured, link-first index of this repo's documentation, built for fast discovery and grounding.
