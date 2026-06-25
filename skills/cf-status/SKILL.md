@@ -59,7 +59,7 @@ If NOT initialized, display: "CLEAR is not initialized in this project. Run `/cf
 
 ### Step 2: Read State Files and Display Output
 
-Read `.clear/state/session.json` for session data (`clearSessionNumber`, `sessionId`, `startTime`, `tokenUsage.*`). Read `.clear/state/sync-state.json` (optional) for active work context (`workpackage.displayId`, `workpackage.name`, `plan.activePhaseDisplayId`, `plan.name`).
+Read `.clear/state/session.json` for session data (`clearSessionNumber`, `sessionId`, `startTime`, `tokenUsage.*`). Read `.clear/state/sync-state.json` (optional) for active work context (`workpackage.displayId`, `workpackage.title`, `plan.activePhaseDisplayId`). Note: `PlanSummary` in sync-state has no `name` field by design — plan identity is carried by `master-plan.yaml`; the sync summary tracks active phase + progress + blockers only.
 
 ```bash
 SESSION_STATE=$(cat .clear/state/session.json 2>/dev/null)
@@ -90,9 +90,8 @@ echo "$SYNC_STATE" | jq -r '
   if .workpackage.displayId then
     "",
     "Active Work",
-    "  Workpackage: \(.workpackage.displayId) - \(.workpackage.name // "unknown")",
-    "  Phase:       \(.plan.activePhaseDisplayId // "unknown")",
-    "  Plan:        \(.plan.name // "unknown")"
+    "  Workpackage: \(.workpackage.displayId) - \(.workpackage.title // "unknown")",
+    "  Phase:       \(.plan.activePhaseDisplayId // "unknown")"
   else empty end
 '
 ```
@@ -133,6 +132,8 @@ Based on the token usage percentage, append one of:
 - 60-75%: "Warning: Consider wrapping up current task"
 - 75-85%: "Critical: Begin handoff preparation"
 - Above 85%: "Emergency: Stop new work, finalize handoff immediately"
+
+> **Threshold source-of-truth**: Defaults are 60% / 75% / 85% (warning / critical / emergency). Configurable per project via `.clear/config/session-management.yaml`. The session-monitor hook reads thresholds from `.clear/state/session.json` (`.thresholds.*`), which is initialized from the config file on session start. See `session-management` skill for the configuration schema.
 
 ---
 

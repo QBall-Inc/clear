@@ -34,14 +34,14 @@ If `WP_ID` is empty (user said "start the next workpackage" without specifying a
 
 ```bash
 if [ -z "$WP_ID" ]; then
-  NEXT_RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/plan/cli/next-cli.js" --clear-dir=.clear 2>/dev/null)
+  NEXT_RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/plan/cli/next-cli.js" --clear-dir=./.clear 2>/dev/null)
   NEXT_STATUS=$(echo "$NEXT_RESULT" | jq -r '.status // "error"')
   if [ "$NEXT_STATUS" = "success" ]; then
     NEXT_WP=$(echo "$NEXT_RESULT" | jq -r '.nextWorkpackage // ""')
     NEXT_NAME=$(echo "$NEXT_RESULT" | jq -r '.nextWorkpackageName // ""')
     echo "IMPLICIT_RESOLVE: $NEXT_WP ($NEXT_NAME)"
   else
-    echo "Could not resolve next workpackage: $(echo "$NEXT_RESULT" | jq -r '.additionalContext // .error // "No recommendation available"')"
+    echo "Could not resolve next workpackage: $(echo "$NEXT_RESULT" | jq -r '.message // .error // "No recommendation available"')"
     exit 1
   fi
 fi
@@ -55,8 +55,8 @@ When `IMPLICIT_RESOLVE` is returned, **you MUST confirm with the user** before p
 ### Step 2 — Execute start
 
 ```bash
-RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/workpackage/cli/lifecycle-cli.js" start "$WP_ID" $FORCE_FLAG --clear-dir=.clear 2>/dev/null)
-CONTEXT=$(echo "$RESULT" | jq -r '.additionalContext // .error // "Unknown error"')
+RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/workpackage/cli/lifecycle-cli.js" start "$WP_ID" $FORCE_FLAG --clear-dir=./.clear 2>/dev/null)
+CONTEXT=$(echo "$RESULT" | jq -r '.message // .error // "Unknown error"')
 echo "$CONTEXT"
 ```
 

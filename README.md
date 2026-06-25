@@ -5,543 +5,211 @@
 <h1 align="center">CLEAR</h1>
 
 <p align="center">
-  Context Layering & Engineering for Agentic Resources.
+  <strong>Context Layering &amp; Engineering for Agentic Resources.</strong>
   <br />
-  Persistent memory, intelligent context, and structured project management for Claude Code.
+  A coding-intelligence framework: a living, filesystem-based knowledge graph,
+  bound to your code and kept fresh as you build, so coding agents get the
+  right context at the right time and don't go haywire.
 </p>
 
 <p align="center">
   <a href="#quick-install">Install</a> &middot;
-  <a href="#architecture">Architecture</a> &middot;
-  <a href="#hooks">Hooks</a> &middot;
-  <a href="#skills">Skills</a> &middot;
-  <a href="#knowledge-system">Knowledge</a> &middot;
-  <a href="#roadmap">Roadmap</a>
+  <a href="#what-is-clear">What is CLEAR</a> &middot;
+  <a href="#the-clear-knowledge-spec-cks">Knowledge (CKS)</a> &middot;
+  <a href="#structured-development">Workflow</a> &middot;
+  <a href="#built-to-be-ported">Portability</a> &middot;
+  <a href="#roadmap">Roadmap</a> &middot;
+  <a href="#contributing">Contributing</a>
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License" /></a>
-  <a href="https://github.com/QBall-Inc/clear"><img src="https://img.shields.io/badge/status-in_development-orange" alt="In Development" /></a>
+  <img src="https://img.shields.io/badge/version-1.0.0-blue" alt="version 1.0.0" />
+  <img src="https://img.shields.io/badge/npm-%40qball--inc%2Fclear-red" alt="npm (on publish)" />
+  <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="Apache 2.0 License" />
+  <img src="https://img.shields.io/github/stars/QBall-Inc/clear?style=social" alt="GitHub stars" />
 </p>
 
 ---
 
-> **Early Access.** CLEAR is actively under development (v0.1.0). The core architecture is stable and functional, but APIs and schemas may change between versions. Install at your own risk — and [open an issue](https://github.com/QBall-Inc/clear/issues) if something breaks.
+> **For AI agents and LLMs:** start with **[`llms.txt`](llms.txt)** — a structured, link-first index of this repo's documentation, built for fast discovery and grounding.
 
-### If you find this useful, please give it a star. It helps others discover the project.
+## CLEAR v1.0
 
-[![GitHub stars](https://img.shields.io/github/stars/QBall-Inc/clear?style=social)](https://github.com/QBall-Inc/clear)
+CLEAR v1.0 is a **stable, state-correct lifecycle surface** — a persistent,
+code-bound markdown knowledge base plus structured plan/workpackage/session
+management, with a single-writer state model that keeps every surface in agreement.
 
----
+See the [CHANGELOG](CHANGELOG.md) for the full release history.
 
 ## What is CLEAR?
 
-CLEAR is a [Claude Code plugin](https://docs.anthropic.com/en/docs/claude-code/plugins) that gives Claude persistent memory across sessions, structured project management, and intelligent context injection. It solves the fundamental problem of agentic AI development: **every session starts from zero.**
+CLEAR is a [Claude Code plugin](https://docs.anthropic.com/en/docs/claude-code/plugins)
+that gives each coding session memory of the ones before it, so an agent picks up
+where the last session left off instead of starting cold. It does two things, and
+they are one system:
 
-Without CLEAR, each Claude Code session is amnesic. Claude doesn't know what happened yesterday, what decisions were made, which workpackage is active, or what the project plan looks like. You spend the first 10 minutes of every session re-explaining context that was already established. And when sessions end, decisions, patterns, and lessons evaporate.
+1. **It builds a living, filesystem-based knowledge graph** — a markdown
+   knowledge base, not a graph database (no Neo4j, no server; just diffable
+   files in your repo). Architectural patterns, technical decisions, lessons
+   learned, and business rules are captured as *typed, cross-linked concepts
+   bound to the code they describe.* Touch a file, and the decisions and
+   patterns attached to it surface automatically.
 
-CLEAR fixes this by maintaining a persistent `.clear/` state directory in your project that tracks:
+2. **It keeps that graph fresh.** As development progresses, the graph is
+   auto-refreshed: net-new entries, edits, **supersession**, and
+   **deprecation**. The knowledge prunes itself for relevance instead of
+   going stale.
 
-- **Knowledge entries** — technical decisions, architectural patterns, lessons learned, and business rules captured as structured documents with full-text search via SQLite FTS5
-- **Project plans** — phased plans with workpackages, milestones, dependencies, and progress tracking
-- **Session state** — session numbers, token usage monitoring, handoff documents for continuity
-- **Context injection** — hooks that automatically surface relevant knowledge when Claude reads or writes files linked to knowledge entries
+The engine that does both is a **structured development workflow**:
 
-The result: Claude starts every session knowing what it knew last time. It surfaces relevant decisions when you touch related files. It tracks your project's progress across phases and workpackages. And it does this without you having to ask.
+> **plan → schedule → act → manage**
 
-## Who is it for?
+Every plan, workpackage, decision, and lesson flows into the graph as you work,
+bound to code, and the workflow's progression is what triggers the pruning. You
+don't maintain the knowledge base as a side chore: **building the software
+maintains it.** The right context reaches the right agent at the right time, and
+coding agents stay on-track instead of going haywire.
 
-- **Solo developers** managing multi-session projects with Claude Code who need continuity between sessions
-- **Teams** that want structured project management (plans, phases, workpackages, milestones) integrated into their AI-assisted workflow
-- **Knowledge-intensive projects** where decisions, patterns, and lessons need to persist and be discoverable
-- **Users on Claude Max & Enterprise plans** — the hook system runs on every tool use, and knowledge capture adds overhead that benefits from generous token budgets
+## The CLEAR Knowledge Spec (CKS)
 
-## Who is it not for?
+CLEAR's knowledge is **CKS — the CLEAR Knowledge Spec**: a standalone knowledge
+spec built on opinionated typed primitives, a lifecycle, and a defined
+consumption pattern. Code is its first domain, not its only one — CKS is built
+to grow first-class primitives beyond code: people, places, organizations,
+business entities, events.
 
-- **One-shot tasks.** If your Claude Code usage is single-session Q&A or quick fixes, CLEAR's persistent state adds overhead you don't need.
-- **Users on Free or Pro plans.** The hook system fires on every Read/Write/Edit, and knowledge operations add latency. Lower-tier plans will feel the token cost more acutely.
+In **June 2026**, Google open-sourced the **Open Knowledge Format (OKF)**, a
+v0.1 *draft* for markdown-native, typed, resource-bound knowledge. **CLEAR has
+been shipping a working superset of that model — with full lifecycle management,
+for coding agents — since 2025.** CKS is its own standard, and OKF's draft is
+independent confirmation that the model is right. We borrow a few of OKF's best
+ideas to harden CKS, without folding CKS into it.
 
-## Why?
+|  | **OKF** (Google, v0.1 draft) | **CKS / CLEAR** |
+|---|---|---|
+| **Format** — typed concepts, description, tags, resource binding, cross-links, citations | ✅ specified | ✅ shipped (parity) |
+| **Primitives** — first-class knowledge types | unopinionated *(by design)* | ✅ opinionated; growing beyond code |
+| **Lifecycle** — status, supersession, deprecation, **pruning/freshness**, provenance | — *(out of scope)* | ✅ shipped |
+| **System** — capture during dev, structured workflow, context serving, state sync, search | — *(a format)* | ✅ shipped |
 
-Claude Code is extraordinarily capable within a single session. But software projects span weeks, months, or years. The gap between "what Claude can do in one session" and "what a project needs across many sessions" is enormous.
+OKF and CKS agree on the core; that is the convergence. CKS stands on its own,
+though: it has opinionated primitives, a lifecycle, and a consumption pattern,
+and it is growing toward people, places, and business, not only code. And CLEAR
+operationalizes it.
 
-Without persistent context:
-- Every session starts with "let me read the codebase and figure out where we are"
-- Technical decisions get re-debated because nobody remembers the rationale
-- Lessons learned from debugging sessions vanish when the context window rotates
-- Project progress is tracked in your head, not in a queryable system
-- Handoffs between sessions are manual, error-prone, or nonexistent
+→ Full comparison and the convergent-validation evidence: the **[knowledge-system guide](docs/guides/knowledge-system.md)** and the formal **[`CKS.md`](CKS.md)** spec.
 
-CLEAR closes this gap by making context accumulation automatic. Knowledge is captured during natural workflow — decisions, patterns, and lessons are stored as structured entries. Plans and workpackages provide the scaffolding for multi-session projects. Hooks inject relevant context at the right moment, so Claude doesn't just know what happened — it knows what matters right now.
+## Structured development
+
+CLEAR makes the development loop explicit and keeps agents inside it.
+
+```mermaid
+%%{init: {'theme':'base','themeVariables':{'primaryColor':'#1f2937','primaryTextColor':'#f9fafb','primaryBorderColor':'#6b7280','lineColor':'#9ca3af','secondaryColor':'#374151','tertiaryColor':'#374151','clusterBkg':'#111827','clusterBorder':'#4b5563'}}}%%
+flowchart LR
+    P["plan<br/><sub>plan management</sub>"] --> S["schedule<br/><sub>workpackage management</sub>"]
+    S --> A["act<br/><sub>development</sub>"]
+    A --> M["manage<br/><sub>session management</sub>"]
+    A -. "captures decisions, patterns,<br/>lessons, business rules" .-> KG[("filesystem-based<br/>knowledge graph")]
+    M -. "supersede · deprecate · prune" .-> KG
+    KG -. "right context, right agent, right time" .-> A
+```
 
 ## Quick install
 
-### Option A: Plugin directory
-
-Clone this repo and point Claude Code at it:
-
-```bash
-git clone https://github.com/QBall-Inc/clear.git ~/plugins/clear
-claude --plugin-dir ~/plugins/clear
-```
-
-### Option B: Marketplace (coming soon)
+CLEAR installs via npm or the QBall-Inc plugin marketplace, mirroring the
+standard Claude Code plugin flow.
 
 ```bash
+# Option A — npm
+claude /plugin install npm:@qball-inc/clear
+
+# Option B — marketplace
 claude /plugin marketplace add QBall-Inc/plugins-market
 claude /plugin install clear@qball-inc
 ```
 
-### Post-install
-
-After installing, start a Claude Code session and run:
+After installing, restart your session and run the guided setup:
 
 ```
-/clear-framework:cf-init
+/cf-init
 ```
 
-This initializes CLEAR in your project:
-- Creates `.clear/` directory with config, state, knowledge, and workpackage subdirectories
-- Configures the statusline for real-time token monitoring
-- Sets up hook bindings for automatic context management
-
-> **Compatibility.** CLEAR works alongside other Claude Code plugins, including [The Bulwark](https://github.com/QBall-Inc/the-bulwark). Both plugins' hooks run independently — Claude Code executes all matching hooks, not just the first one.
-
-## Prerequisites
-
-| Requirement | Details |
-|-------------|---------|
-| Claude Code | Latest version with plugin support |
-| Node.js | v18+ (for compiled TypeScript CLIs) |
-| jq | Used by hook scripts for JSON processing |
-| SQLite | Bundled via `better-sqlite3` — no separate install needed |
-| Platform | Linux, macOS, WSL2. Native Windows is not tested. |
-| Claude Plan | Max or Enterprise recommended for best experience with hook overhead |
-
-## Architecture
-
-CLEAR is built as a layered system where each layer operates independently but coordinates through a shared `.clear/` state directory.
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Claude Code Session                       │
-├─────────────────────────────────────────────────────────────┤
-│  Hooks Layer          │  Skills Layer                       │
-│  ┌─────────────────┐  │  ┌───────────────────────────────┐  │
-│  │ SessionStart     │  │  │ /cf-init     /cf-plan         │  │
-│  │ PreToolUse       │  │  │ /cf-knowledge /cf-workpackage │  │
-│  │ PostToolUse      │  │  │ /cf-status   /cf-handoff      │  │
-│  │ UserPromptSubmit │  │  │ /cf-debug    /cf-help         │  │
-│  │ PreCompact       │  │  │ /cf-reload                    │  │
-│  │ Stop             │  │  └───────────────────────────────┘  │
-│  │ SessionEnd       │  │                                     │
-│  └─────────────────┘  │                                     │
-├─────────────────────────────────────────────────────────────┤
-│                    CLI Layer (TypeScript → JS)               │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐   │
-│  │ Knowledge│ │   Plan   │ │Workpackage│ │    Sync      │   │
-│  │ 13 CLIs  │ │ 9 CLIs   │ │  6 CLIs   │ │  2 CLIs      │   │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────────┘   │
-├─────────────────────────────────────────────────────────────┤
-│                    State Layer (.clear/)                     │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐   │
-│  │ config/  │ │  state/  │ │knowledge/│ │ workpackages/ │   │
-│  │ plans/   │ │  audit/  │ │ entries/ │ │  registry     │   │
-│  │          │ │sessions/ │ │ index.db │ │               │   │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### The Four Layers
-
-**Layer 1: State.** The `.clear/` directory is the source of truth. It contains YAML configuration files, JSON state files, Markdown knowledge entries, SQLite indexes, and YAML workpackage definitions. Everything is file-based — no external databases, no network calls, no cloud dependencies. Your project's context lives in your project.
-
-**Layer 2: CLIs.** Thirty TypeScript modules compiled to JavaScript handle all data operations. Each CLI is a single-purpose tool: `capture-cli.ts` creates knowledge entries, `search-cli.ts` queries the index, `lifecycle-cli.ts` manages workpackage transitions, `update-cli.ts` handles plan mutations. CLIs accept JSON input, produce JSON output, and never modify state outside their declared scope.
-
-**Layer 3: Hooks.** Seven hook types intercept Claude Code's lifecycle events. `SessionStart` loads context and initializes state. `PreToolUse` injects relevant knowledge when Claude reads files. `PostToolUse` tracks file changes and surfaces impact warnings after writes. `UserPromptSubmit` monitors token usage and captures knowledge patterns. `PreCompact` drains pending operations before context compression. `Stop` runs a three-tier assessment of unsaved work. `SessionEnd` finalizes the session.
-
-**Layer 4: Skills.** Nine slash commands provide the user interface. Skills orchestrate CLIs, format output, and handle multi-step workflows like plan creation (which spawns a 3-agent pipeline: Requirements Analyst → Architect → Detail Engineer).
-
-### Data Flow
-
-```mermaid
-flowchart LR
-    A[User Prompt] --> B[UserPromptSubmit Hook]
-    B --> C[Token Monitor]
-    B --> D[Knowledge Pattern Detection]
-    D -->|Decision detected| E[Capture CLI]
-    E --> F[Knowledge Entry .md]
-    E --> G[SQLite Index]
-
-    H[Claude Reads File] --> I[PreToolUse Hook]
-    I --> J[File-Knowledge Index Lookup]
-    J -->|Match found| K[Inject Related Knowledge]
-
-    L[Claude Writes File] --> M[PostToolUse Hook]
-    M --> N[Change Accumulator]
-    M --> O[Impact Warning if Linked Entry]
-
-    P[Session Start] --> Q[SessionStart Hook]
-    Q --> R[Load Plan State]
-    Q --> S[Load Knowledge Context]
-    Q --> T[Drain Pending Index Updates]
-    Q --> U[Session Init + Resume Detection]
-```
-
-## Knowledge System
-
-The knowledge system is CLEAR's most distinctive feature. It captures, indexes, and surfaces technical knowledge automatically.
-
-### Knowledge Types
-
-| Type | ID Prefix | Purpose | Example |
-|------|-----------|---------|---------|
-| `technical-decision` | TD-xxx | Architecture and implementation decisions with rationale | "Using SQLite over PostgreSQL for embedded knowledge storage" |
-| `architectural-pattern` | PAT-xxx | Reusable patterns discovered during development | "CLI modules export both main() and individual functions for testability" |
-| `lesson-learned` | LES-xxx | Debugging insights and failure modes | "Unguarded main() calls at module scope cause process.exit on import" |
-| `business-rule` | BR-xxx | Domain rules and constraints | "Workpackage dependencies must be acyclic" |
-
-### Capture Pipeline
-
-Knowledge entries are created through `/cf-knowledge capture` or detected automatically by hooks. Each entry goes through:
-
-1. **Type validation** — Zod schema enforces one of the four valid types. Invalid types are rejected with a clear error listing valid options.
-2. **ID generation** — Deterministic prefix based on type (TD-, PAT-, LES-, BR-) with sequential numbering.
-3. **Markdown creation** — Entry stored as `.clear/knowledge/entries/{ID}.md` with YAML frontmatter (id, type, title, status, tags, related_files, created, description) and a Markdown body.
-4. **Inline index rebuild** — After creation, the SQLite FTS5 index is rebuilt synchronously so the entry is immediately searchable. No manual rebuild needed, no stale markers.
-
-### Search
-
-The search engine uses a three-pass priority system:
-
-1. **Tag exact match** (highest weight) — entries whose tags match the query terms
-2. **Title keyword match** (medium weight) — entries whose titles contain query keywords
-3. **TF-IDF cosine similarity** (relevance-based) — full-text search across all entry content using SQLite FTS5
-
-Results are formatted with status indicators:
-- ✅ Active entries
-- ⚠️ Deprecated entries (with reason)
-- 🔄 Superseded entries (with arrow to replacement)
-
-### Knowledge Lifecycle
-
-Entries aren't static. They have a full lifecycle:
-
-| Operation | Command | What Happens |
-|-----------|---------|--------------|
-| **Create** | `/cf-knowledge capture` | New entry with type validation + inline index |
-| **Update** | `/cf-knowledge update <id>` | Modify tags, description, metadata |
-| **Link** | `/cf-knowledge link <id> --to <wp>` | Associate entry with a workpackage |
-| **Deprecate** | `/cf-knowledge deprecate <id>` | Mark as outdated (preserved, flagged in search) |
-| **Supersede** | `/cf-knowledge supersede <old> <new>` | Chain replacement (old → new, max depth 3) |
-| **Delete** | `/cf-knowledge delete <id> --force` | Permanent removal with impact analysis preview |
-
-### Context Injection
-
-The real power of the knowledge system is automatic context injection via hooks:
-
-- **PreToolUse (Read):** When Claude reads a file, CLEAR checks the file-knowledge index. If the file is linked to knowledge entries, those entries are injected as `additionalContext` — Claude sees the relevant decisions and patterns without being asked.
-- **PostToolUse (Write/Edit):** When Claude modifies a file linked to knowledge entries, CLEAR surfaces an impact warning. This prevents accidental invalidation of documented decisions.
-- **SessionStart:** The most relevant knowledge entries are loaded into Claude's initial context based on recent activity and linked workpackages.
-
-## Plan & Workpackage Management
-
-CLEAR provides structured project management through plans, phases, workpackages, and milestones.
-
-### Plan Creation
-
-Plans can be created two ways:
-
-**Track A: Import.** If you have an existing plan (from [The Bulwark's](https://github.com/QBall-Inc/the-bulwark) `/plan-creation` pipeline or your own YAML), import it directly:
-
-```
-/cf-plan create path/to/plan.yaml
-```
-
-**Track B: Guided generation.** Provide a topic and CLEAR spawns a 3-agent pipeline:
-
-```
-/cf-plan create "build a full-stack task tracker with Express and React"
-```
-
-This spawns:
-1. **Requirements Analyst** — interviews you about scope, priorities, constraints
-2. **Architect** — proposes phases, workpackages, and dependencies
-3. **Detail Engineer** — enriches each workpackage with acceptance criteria, deliverables, and verification steps
-
-You review and approve before anything is written.
-
-### Two-Store Sync
-
-Plan state is maintained in two stores for resilience:
-
-| Store | Format | Purpose |
-|-------|--------|---------|
-| `.clear/plans/master-plan.yaml` | YAML | Human-readable, version-controlled, the "source of truth" for structure |
-| `.clear/state/plan.json` | JSON | Fast access for hooks and CLIs, tracks runtime state (progress, milestones) |
-
-Mutations write to both stores atomically. If the YAML write fails, it's logged but doesn't block the operation (fire-and-log pattern). This ensures hooks are never blocked by filesystem issues while keeping the YAML file as current as possible.
-
-### Workpackage Lifecycle
-
-```mermaid
-stateDiagram-v2
-    [*] --> not_started: Plan Created
-    not_started --> in_progress: /cf-workpackage start
-    in_progress --> paused: /cf-workpackage pause
-    paused --> in_progress: /cf-workpackage resume
-    in_progress --> complete: /cf-workpackage complete
-    complete --> [*]: Phase Progress Updated
-```
-
-Each workpackage is a YAML file in `.clear/workpackages/` with:
-- Display ID and system ID (dual-ID for human readability + collision avoidance)
-- Title, description, status, priority
-- Success criteria (testable acceptance criteria)
-- Deliverables (specific files/artifacts)
-- Verification steps (commands to run)
-- Dependencies on other workpackages
-
-### Milestone Auto-Completion
-
-When all workpackages required by a milestone are complete, the milestone is automatically marked as complete in both the JSON and YAML stores.
-
-### Phase Auto-Advance
-
-When all workpackages in a phase are complete and the next phase exists, the active phase advances automatically. This is written to both stores, so `master-plan.yaml` always reflects the current state.
-
-## Session Lifecycle
-
-CLEAR tracks sessions across Claude Code restarts, providing continuity and token awareness.
-
-### Session Initialization
-
-On every `SessionStart`, CLEAR:
-
-1. Detects whether this is a new session, a resume, a post-compact reload, or a post-`/clear` restart
-2. Increments the session counter (new sessions only)
-3. Loads plan state, active workpackage, and knowledge context
-4. Drains any pending index updates from previous sessions
-5. Cleans up stale accumulators from interrupted sessions
-6. Surfaces deprecation warnings for outdated knowledge entries
-
-### Token Monitoring
-
-CLEAR monitors token consumption through two mechanisms:
-
-1. **Statusline bridge** — The statusline receives real-time token data from Claude Code and writes it to `.clear/state/session.json`. This is the authoritative source.
-2. **Threshold alerts** — When token usage crosses configured thresholds (default: 60% warning, 75% critical, 85% emergency), CLEAR injects warnings into Claude's context and triggers handoff preparation.
-
-### Session Handoff
-
-When a session ends (or approaches token limits), `/cf-handoff` generates a structured handoff document:
-
-```
-.clear/sessions/session_{N}_{YYYYMMDD}.md
-```
-
-Each handoff includes: what was accomplished, files modified, decisions made, what's next, and blockers. The next session's `SessionStart` hook loads this handoff to restore context.
-
-## Hooks
-
-CLEAR installs seven hooks that run automatically. No manual invocation needed.
-
-| Hook | Event | What It Does | Timeout |
-|------|-------|-------------|---------|
-| `session-start.sh` | SessionStart | Initializes session, loads plan/knowledge/WP state, drains pending index, detects resume vs new | 60s |
-| `session-end.sh` | SessionEnd | Finalizes session state, writes end timestamp | 60s |
-| `session-stop.sh` | Stop | Three-tier assessment: path match → pattern detection → LLM prompt for unsaved work | 60s |
-| `user-prompt.sh` | UserPromptSubmit | Token monitoring, knowledge pattern detection, session activity tracking | 60s |
-| `pre-tool.sh` | PreToolUse | Surfaces linked knowledge entries when Claude reads/writes files in the knowledge index | 10s |
-| `post-tool.sh` | PostToolUse | Tracks file changes, surfaces impact warnings for knowledge-linked files, triggers sync | 10s |
-| `session-precompact.sh` | PreCompact | Drains pending index updates before context compression | 30s |
-
-All hooks use `${CLAUDE_PLUGIN_ROOT}` for path resolution and fail gracefully — a hook error never blocks Claude's operation.
-
-## Skills
-
-CLEAR ships 15 skills across two categories.
-
-### Command Skills (user-facing)
-
-These are the slash commands you invoke directly.
-
-| Skill | Command | What It Does |
-|-------|---------|-------------|
-| cf-init | `/cf-init` | Initialize CLEAR in a project. Creates `.clear/` directory, configures statusline, sets up hooks. |
-| cf-plan | `/cf-plan` | Create, import, or manage project plans. Supports both YAML import and guided 3-agent generation. |
-| cf-workpackage | `/cf-workpackage` | Start, pause, resume, or complete workpackages. Tracks deliverables and progress. |
-| cf-knowledge | `/cf-knowledge` | Capture, search, update, deprecate, supersede, or delete knowledge entries. Full lifecycle management. |
-| cf-status | `/cf-status` | Display current session state, token usage, active workpackage, plan progress, and context health. |
-| cf-handoff | `/cf-handoff` | Generate a session handoff document for context transfer to the next session. |
-| cf-debug | `/cf-debug` | Diagnostic tool for troubleshooting CLEAR state, hook binding, and configuration issues. |
-| cf-reload | `/cf-reload` | Reload CLEAR context without restarting the session. Useful after manual state edits. |
-| cf-help | `/cf-help` | Quick reference for all CLEAR commands and capabilities. |
-
-### Management Skills (orchestration)
-
-These skills are invoked by command skills or hooks, not directly by users.
-
-| Skill | Purpose |
-|-------|---------|
-| knowledge-management | Orchestrates knowledge CLI operations, manages the capture/search/lifecycle pipeline |
-| plan-management | Orchestrates plan CLI operations, manages plan creation pipelines and state mutations |
-| workpackage-management | Orchestrates workpackage CLI operations, manages lifecycle transitions |
-| session-management | Orchestrates session lifecycle, handoff generation, token monitoring |
-| cf-help-guide | Extended help content and usage examples |
-| skill-creator | Meta-skill for creating new CLEAR skills |
-
-## The `.clear/` Directory
-
-Everything CLEAR persists lives in `.clear/` at your project root. Here's what's inside:
-
-```
-.clear/
-├── config/
-│   ├── clear-manifest.yaml    # Project identity (name, ID, version)
-│   └── clear-config.yaml      # Session thresholds, knowledge settings
-├── state/
-│   ├── session.json           # Current session state, token usage
-│   ├── plan.json              # Plan runtime state (progress, milestones)
-│   ├── workpackage.json       # Active workpackage state
-│   ├── sync-state.json        # Cross-domain sync state
-│   └── file-knowledge-index.json  # File → knowledge entry mappings
-├── plans/
-│   └── master-plan.yaml       # The project plan (phases, WPs, milestones)
-├── knowledge/
-│   ├── entries/               # Knowledge entry Markdown files
-│   │   ├── TD-001.md
-│   │   ├── PAT-001.md
-│   │   └── ...
-│   ├── index.db               # SQLite FTS5 full-text search index
-│   └── index.json             # JSON index (legacy, being migrated)
-├── workpackages/
-│   ├── registry.yaml          # WP registry with dual-ID mappings
-│   ├── wp-{hash}.yaml         # Individual workpackage definitions
-│   └── ...
-├── sessions/
-│   ├── session_1_20260331.md  # Session handoff documents
-│   └── ...
-├── audit/
-│   ├── hooks.log              # Hook execution log
-│   ├── hook-errors.log        # Hook error log
-│   └── session_{N}.jsonl      # Per-session audit trail
-└── initialized                # Sentinel file
-```
-
-**What to commit:** `config/`, `plans/`, `knowledge/entries/`, `workpackages/`, `sessions/`. These are your project's persistent context.
-
-**What to gitignore:** `state/`, `audit/`, `knowledge/index.db`, `knowledge/index.json`. These are runtime artifacts that rebuild automatically.
-
-## Compatibility with The Bulwark
-
-CLEAR and [The Bulwark](https://github.com/QBall-Inc/the-bulwark) are companion plugins built by the same team. They serve different purposes and work together:
-
-| Concern | The Bulwark | CLEAR |
-|---------|------------|-------|
-| **Focus** | Code quality & governance | Context & project management |
-| **Hooks** | PostToolUse → typecheck, lint, build | PreToolUse → knowledge injection, PostToolUse → change tracking |
-| **Skills** | Code review, test audit, fix validation | Knowledge capture, plan management, session lifecycle |
-| **State** | Rules.md, CLAUDE.md, logs/ | .clear/ directory |
-| **Agents** | 15 specialized sub-agents | 3 plan-creation agents |
-
-Both plugins' hooks run independently. Claude Code executes all matching hooks for each event, so there's no conflict. The planned long-term integration (POST-36) will merge them into a single plugin with opt-in activation for each capability.
+This provisions the project's `.clear/` state directory and walks you through
+configuration. On its first run, `/cf-init` also fetches the knowledge base's
+native database binding — a one-time download that needs network access. See the
+[getting-started guide](docs/guides/getting-started.md) for prerequisites and a
+full first-project walkthrough.
+
+## Who is it for?
+
+- **Solo developers** on multi-session projects who need real continuity between
+  sessions instead of re-explaining context every morning.
+- **Teams** that want structured project management — plans, workpackages,
+  milestones — woven into the AI-assisted workflow.
+- **Knowledge-intensive projects** where decisions, patterns, and lessons must
+  persist, stay fresh, and be discoverable against the code they concern.
+- **Users on Claude Max & Enterprise plans** — the hook system runs on tool use
+  and knowledge capture adds overhead that benefits from generous token budgets.
+
+## Built to be ported
+
+CLEAR's core is **harness-agnostic by design.** The runtime is a set of
+TypeScript CLIs (knowledge, plan, workpackage, sync) and a portable CKS
+knowledge bundle; **Claude Code is the first adapter**, not the only possible
+one.
+
+We want CLEAR ported to other coding harnesses — **Codex, Cursor, Aider, Gemini
+CLI**, and beyond. The portable-core / Claude-Code-adapter boundary and a porting
+guide are on the near-term docs roadmap. To help shape the design or build an
+adapter, **[open an issue](https://github.com/QBall-Inc/clear/issues)**, or ask
+there about coming on as a contributor.
+
+## Contributing
+
+Issues and PRs are both welcome: on the **design** itself, on **harness ports**,
+and on the docs. To help, **[open an issue](https://github.com/QBall-Inc/clear/issues)**
+for a bug, a feature, or an adapter proposal, or to ask about becoming a
+contributor. The backlog is being migrated to **GitHub Issues** as the public
+roadmap and contribution surface.
+
+> **How this repo works.** This public repository carries **only the user-facing
+> plugin components**, not the full development history — it is a **mirror** of a
+> private development repo. Any issue reported (and any PR merged) here is **pulled
+> into the private repo and then synced back to public**, which keeps the two from
+> diverging. Full porting model: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Roadmap
 
-CLEAR is actively developed. Here's what's planned, organized by priority.
+*Aspirational — direction, not commitments.*
 
-### Ship-blocking (before v1.0)
+- **Knowledge beyond code** — new first-class primitives: people, places,
+  organizations, business entities, events. The bridge from coding to non-coding domains.
+- **Hardening CKS** — adopt select ideas from elsewhere (resource-binding,
+  citation conventions); add verification-method / confidence.
+- **Knowledge enrichment** — automatic extraction from handoffs and completed work.
+- **Harness adapters** — beyond Claude Code (see *Built to be ported*).
+- **Beyond** — the longer-term vision (web GUI, the agentic-harness direction)
+  lives in the docs roadmap.
 
-These must land before the v1.0 release.
+## Documentation
 
-| Feature | Description |
-|---------|-------------|
-| **Schema versioning** | Version the `.clear/` schema so future updates can migrate state without data loss |
-| **Pending status for entries** | New entries start as "pending" until confirmed, preventing noise from speculative captures |
-| **Grace period** | Brief window after capture where entries can be amended before they're indexed |
-| **Surfacing observability log** | Track which knowledge entries were surfaced, when, and whether they were useful |
-| **Category expansion (4 → 7)** | Add three new knowledge types: Integration Wisdom (IW), Process Notes (PROC), and Shorthand/Conventions (SH) |
-| **Handoff extraction** | Automatically extract knowledge entries from session handoff documents |
+- [`llms.txt`](llms.txt) — link-first documentation index for AI agents and LLMs.
 
-### High priority (post v1.0)
+**Guides**
 
-| ID | Feature | Description |
-|----|---------|-------------|
-| POST-16 | Skill eval suite | Anthropic-style evaluations for all CLEAR skills |
-| POST-17 | Plugin portability regression test | Automated test that verifies CLEAR works in a fresh project |
-| POST-20 | Behavioral rules injection | `/cf-init` injects CLEAR-specific behavioral rules |
-| POST-21 | Bash → TypeScript migration | Gradually migrate hook dispatchers from Bash to TypeScript for better error handling |
-| POST-36 | Bulwark-CLEAR integration | Merge both plugins into one with opt-in activation |
+- [Getting started](docs/guides/getting-started.md) — install, prerequisites, and your first project.
+- [How CLEAR works](docs/guides/how-it-works.md) — the two pillars and the plan → schedule → act → manage loop.
+- [The knowledge system](docs/guides/knowledge-system.md) — CKS in depth: types, lifecycle, freshness, and how CKS differs from OKF.
+- [Plan management](docs/guides/plan-management.md) · [Workpackage management](docs/guides/workpackage-management.md) · [Session management](docs/guides/session-management.md) — the workflow surfaces in depth.
 
-### Medium priority
+**Reference**
 
-| ID | Feature | Description |
-|----|---------|-------------|
-| POST-4 | Scope validation | Warn when Write/Edit operations target files outside the active workpackage |
-| POST-7 | Token tracking fix | Use statusline-reported usage as primary source instead of transcript parsing |
-| POST-11 | SQL injection guard | LIKE wildcard injection guard in knowledge search methods |
-| POST-14 | Array serializer fix | Prevent comma injection in generateMarkdown array serialization |
-| POST-18 | Display ID in comms | Use human-readable display IDs in all user-facing output |
-| POST-22 | MCP integration | MCP-to-CLI converter as a CLEAR skill |
-| POST-24 | Continuous plan rollup | Hook-wired automatic plan progress updates |
-| POST-25 | Sync convergence | Full convergence guarantee for the two-store sync system |
-| POST-37 | Router audit logging | Propagate session context through router to enable audit logging in all handlers |
-| POST-39 | Session resume fix | Session resume incorrectly increments session number |
-
-### Low priority
-
-| ID | Feature | Description |
-|----|---------|-------------|
-| POST-1 | Module splits | Extract runtime functions from types.ts files (CS1 compliance) |
-| POST-2 | Template consolidation | Reduce duplication across Handlebars templates |
-| POST-5 | File locking | Mutex for writeFileSync in concurrent sync state operations |
-| POST-6 | Hook exclusion patterns | Configurable patterns for skipping hooks on specific file paths |
-| POST-10 | Bats prerequisite guard | Check for jq before running Bats integration tests |
-| POST-38 | Default statusline | Simpler single-gauge statusline as default, dual-gauge as opt-in |
-
-### Non-blocking (exploratory)
-
-| Feature | Description |
-|---------|-------------|
-| **Background daemon** | Curation daemon that periodically reviews and consolidates knowledge entries |
-| **MCP query tool** | Expose knowledge search as an MCP resource for other tools to query |
-| **Web GUI** | Browser-based dashboard wrapping CLEAR + Bulwark state visualization |
-
-## FAQ
-
-### How is this different from Claude Code's built-in memory?
-
-Claude Code's memory (via `CLAUDE.md` and the `memory/` system) stores user preferences and project conventions. CLEAR stores *project knowledge* — technical decisions, architectural patterns, lessons learned — as structured, searchable, linkable documents with lifecycle management. They're complementary: Claude Code memory is about how to work, CLEAR knowledge is about what was decided and why.
-
-### Does CLEAR slow down Claude Code?
-
-Each hook adds a small amount of latency. `PreToolUse` and `PostToolUse` hooks have 10-second timeouts and typically complete in under 1 second. `SessionStart` can take 5-15 seconds on first load (SQLite index initialization, plan loading). After initialization, the overhead is minimal. On lower-tier Claude plans, the token cost of hook context injection is the more relevant concern.
-
-### Can I use CLEAR without The Bulwark?
-
-Yes. CLEAR and The Bulwark are independent plugins. CLEAR works standalone for context management and project tracking. The Bulwark adds code quality enforcement (typecheck, lint, build hooks) and multi-agent review pipelines. They're designed to complement each other but neither requires the other.
-
-### What happens if I delete `.clear/`?
-
-You lose all persistent state. Run `/cf-init` to reinitialize. If you committed `.clear/config/`, `.clear/plans/`, `.clear/knowledge/entries/`, and `.clear/workpackages/` to git, you can restore those. Runtime state (`state/`, `audit/`) will be regenerated. The SQLite index will be rebuilt from the entry files on next session start.
-
-### Can I manually edit `.clear/` files?
-
-Yes. Knowledge entries are Markdown with YAML frontmatter — edit them in any text editor. Plan files are standard YAML. After manual edits, run `/cf-reload` to refresh CLEAR's in-memory state. The SQLite index will be rebuilt automatically if entries changed.
-
-### How many knowledge entries can CLEAR handle?
-
-The SQLite FTS5 index scales well to thousands of entries. The practical limit is context budget — CLEAR injects a configurable percentage of knowledge into each session (default: 10% of context window). With many entries, only the most relevant ones are surfaced.
-
----
+- [Architecture](docs/architecture.md) — the layered stack, the shared context layer, and the single-writer state model.
+- [`CKS.md`](CKS.md) — the formal CLEAR Knowledge Spec.
+- [Command references](docs/reference/) — a reference doc for every `/cf-*` command.
+- [`CHANGELOG.md`](CHANGELOG.md) — release history.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to contribute design, ports, and docs.
 
 ## License
 
-[MIT](LICENSE)
-
----
-
-### If you find this useful, please give it a star. It helps others discover the project.
-
-[![GitHub stars](https://img.shields.io/github/stars/QBall-Inc/clear?style=social)](https://github.com/QBall-Inc/clear)
+Apache License 2.0 — chosen over MIT for its explicit patent grant.

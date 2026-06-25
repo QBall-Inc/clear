@@ -20,21 +20,41 @@ const deprecate_cli_1 = require("./deprecate-cli");
 const supersede_cli_1 = require("./supersede-cli");
 const capture_cli_1 = require("./capture-cli");
 const delete_cli_1 = require("./delete-cli");
+const dismiss_cli_1 = require("./dismiss-cli");
 /**
  * Check if a string looks like a knowledge ID
  */
 function isKnowledgeId(value) {
-    return /^(TD|PAT|BR|LES)-\d+$/i.test(value);
+    return /^(TD|PAT|BR|LES|IW|SH|PROC)-\d+$/i.test(value);
 }
 /**
- * Parse command line arguments
+ * Parse command line arguments. Extracts router-level flags (--clear-dir,
+ * --session-id, --session-number) and returns the remaining tokens as the
+ * subcommand + subArgs. Session flags are router-level rather than per-handler
+ * so every handler receives consistent session context without each having to
+ * reimplement the parse.
  */
 function parseRouterArgs(args) {
     let clearDir = '';
+    let sessionId;
+    let sessionNumber;
     const filteredArgs = [];
     for (const arg of args) {
         if (arg.startsWith('--clear-dir=')) {
-            clearDir = arg.split('=')[1];
+            clearDir = arg.substring('--clear-dir='.length);
+        }
+        else if (arg.startsWith('--session-id=')) {
+            sessionId = arg.substring('--session-id='.length);
+        }
+        else if (arg.startsWith('--session-number=')) {
+            const raw = arg.substring('--session-number='.length);
+            const parsed = parseInt(raw, 10);
+            if (Number.isNaN(parsed)) {
+                process.stderr.write(`[CLEAR] Warning: --session-number=${raw} is not numeric; audit log entry will be skipped for this invocation\n`);
+            }
+            else {
+                sessionNumber = parsed;
+            }
         }
         else {
             filteredArgs.push(arg);
@@ -45,12 +65,12 @@ function parseRouterArgs(args) {
     }
     const subcommand = filteredArgs[0] || 'status';
     const subArgs = filteredArgs.slice(1);
-    return { subcommand, subArgs, clearDir };
+    return { subcommand, subArgs, clearDir, session: { sessionId, sessionNumber } };
 }
 /**
  * Handle status subcommand (default)
  */
-async function handleStatus(_args, clearDir) {
+async function handleStatus(_args, clearDir, _session) {
     const result = await (0, status_cli_1.runStatusCLI)(clearDir);
     return {
         success: result.success,
@@ -61,7 +81,7 @@ async function handleStatus(_args, clearDir) {
 /**
  * Handle show subcommand
  */
-async function handleShow(args, clearDir) {
+async function handleShow(args, clearDir, _session) {
     const entryId = args[0];
     if (!entryId) {
         return {
@@ -80,7 +100,7 @@ async function handleShow(args, clearDir) {
 /**
  * Handle link subcommand
  */
-async function handleLink(args, clearDir) {
+async function handleLink(args, clearDir, _session) {
     const entryId = args[0];
     let workpackageId = '';
     // Parse --to flag
@@ -117,7 +137,7 @@ async function handleLink(args, clearDir) {
 /**
  * Handle unlink subcommand
  */
-async function handleUnlink(args, clearDir) {
+async function handleUnlink(args, clearDir, _session) {
     const entryId = args[0];
     if (!entryId) {
         return {
@@ -136,7 +156,7 @@ async function handleUnlink(args, clearDir) {
 /**
  * Handle deprecate subcommand
  */
-async function handleDeprecate(args, clearDir) {
+async function handleDeprecate(args, clearDir, session) {
     const entryId = args[0];
     let reason = '';
     let force = false;
@@ -156,7 +176,12 @@ async function handleDeprecate(args, clearDir) {
             subcommand: 'deprecate'
         };
     }
-    const result = await (0, deprecate_cli_1.runDeprecateCLI)(clearDir, entryId, { reason, force });
+    const result = await (0, deprecate_cli_1.runDeprecateCLI)(clearDir, entryId, {
+        reason,
+        force,
+        sessionId: session.sessionId,
+        sessionNumber: session.sessionNumber
+    });
     return {
         success: result.success,
         output: result.output,
@@ -166,7 +191,7 @@ async function handleDeprecate(args, clearDir) {
 /**
  * Handle supersede subcommand
  */
-async function handleSupersede(args, clearDir) {
+async function handleSupersede(args, clearDir, session) {
     const oldEntryId = args[0];
     const newEntryId = args[1];
     let force = false;
@@ -183,7 +208,11 @@ async function handleSupersede(args, clearDir) {
             subcommand: 'supersede'
         };
     }
-    const result = await (0, supersede_cli_1.runSupersedeCLI)(clearDir, oldEntryId, newEntryId, { force });
+    const result = await (0, supersede_cli_1.runSupersedeCLI)(clearDir, oldEntryId, newEntryId, {
+        force,
+        sessionId: session.sessionId,
+        sessionNumber: session.sessionNumber
+    });
     return {
         success: result.success,
         output: result.output,
@@ -191,9 +220,38 @@ async function handleSupersede(args, clearDir) {
     };
 }
 /**
+ * Handle dismiss subcommand (K2.7)
+ */
+async function handleDismiss(args, clearDir, session) {
+    const entryId = args[0];
+    if (!entryId) {
+        return {
+            success: false,
+            output: 'Error: Entry ID required. Usage: /cf-knowledge dismiss <id> [--reason="text"]',
+            subcommand: 'dismiss'
+        };
+    }
+    let reason = '';
+    for (let i = 1; i < args.length; i++) {
+        if (args[i].startsWith('--reason=')) {
+            reason = args[i].split('=').slice(1).join('=');
+        }
+    }
+    const result = await (0, dismiss_cli_1.runDismissCLI)(clearDir, entryId, {
+        reason,
+        sessionId: session.sessionId,
+        sessionNumber: session.sessionNumber
+    });
+    return {
+        success: result.success,
+        output: result.output,
+        subcommand: 'dismiss'
+    };
+}
+/**
  * Handle delete subcommand
  */
-async function handleDelete(args, clearDir) {
+async function handleDelete(args, clearDir, session) {
     const entryId = args[0];
     if (!entryId) {
         return {
@@ -212,7 +270,12 @@ async function handleDelete(args, clearDir) {
             force = true;
         }
     }
-    const result = await (0, delete_cli_1.runDeleteCLI)(clearDir, entryId, { reason, force });
+    const result = await (0, delete_cli_1.runDeleteCLI)(clearDir, entryId, {
+        reason,
+        force,
+        sessionId: session.sessionId,
+        sessionNumber: session.sessionNumber
+    });
     return {
         success: result.success,
         output: result.output,
@@ -222,20 +285,25 @@ async function handleDelete(args, clearDir) {
 /**
  * Handle update subcommand
  */
-async function handleUpdate(args, clearDir) {
+async function handleUpdate(args, clearDir, session) {
     const entryId = args[0];
     if (!entryId) {
         return {
             success: false,
-            output: 'Error: Entry ID required. Usage: /cf-knowledge update <id> [--tags=...] [--description=...] [--add-related-file=...]',
+            output: 'Error: Entry ID required. Usage: /cf-knowledge update <id> [--tags=...] [--description=...] [--add-related-file=... ...] (--add-related-file is REPEATABLE)',
             subcommand: 'update'
         };
     }
-    // Parse update flags
+    // Parse update flags. Session context (sessionId + sessionNumber) is parsed
+    // by parseRouterArgs at the router level, NOT here — handleUpdate now uses
+    // the canonical --session-id + --session-number shape used by the four AC18
+    // handlers (delete/deprecate/supersede/dismiss). The legacy --session=<n>
+    // flag is removed; AuditLogger emission gates on both sessionId AND
+    // sessionNumber being set, mirroring delete-cli.ts:174 pattern.
     let tags;
     let description;
+    // WP-DF2 AC3 (S165): accumulate repeatable --add-related-file= flag occurrences.
     let addRelatedFile;
-    let session;
     for (let i = 1; i < args.length; i++) {
         if (args[i].startsWith('--tags=')) {
             tags = args[i].split('=').slice(1).join('=').split(',').filter(Boolean);
@@ -244,10 +312,8 @@ async function handleUpdate(args, clearDir) {
             description = args[i].split('=').slice(1).join('=');
         }
         else if (args[i].startsWith('--add-related-file=')) {
-            addRelatedFile = args[i].split('=').slice(1).join('=');
-        }
-        else if (args[i].startsWith('--session=')) {
-            session = parseInt(args[i].split('=')[1], 10);
+            const v = args[i].split('=').slice(1).join('=');
+            addRelatedFile = (addRelatedFile ?? []).concat([v]);
         }
     }
     const options = {
@@ -257,14 +323,29 @@ async function handleUpdate(args, clearDir) {
         tags,
         description,
         addRelatedFile,
-        session
+        sessionId: session.sessionId,
+        sessionNumber: session.sessionNumber
     };
-    const result = (0, capture_cli_1.updateEntry)(options);
+    const result = await (0, capture_cli_1.updateEntry)(options);
+    // K3.5: type-change branch returns oldId/newId/action='type-change' instead
+    // of entryId/fieldsUpdated. `isTypeChangeResult` narrows the optional
+    // type-change fields to `string` for safe template embedding (TS-K3.5-02).
+    let output;
+    if (!result.success) {
+        output = `Error: ${result.error}`;
+    }
+    else if ((0, capture_cli_1.isTypeChangeResult)(result)) {
+        const cascadeNote = result.cascadedRefs.length > 0
+            ? ` (${result.cascadedRefs.length} cascaded ref${result.cascadedRefs.length === 1 ? '' : 's'}: ${result.cascadedRefs.join(', ')})`
+            : '';
+        output = `Type-changed ${result.oldId} -> ${result.newId}${cascadeNote}`;
+    }
+    else {
+        output = `Updated ${result.entryId}: ${result.fieldsUpdated?.join(', ')}`;
+    }
     return {
         success: result.success,
-        output: result.success
-            ? `Updated ${result.entryId}: ${result.fieldsUpdated?.join(', ')}`
-            : `Error: ${result.error}`,
+        output,
         subcommand: 'update'
     };
 }
@@ -279,13 +360,14 @@ const subcommandHandlers = {
     'deprecate': handleDeprecate,
     'supersede': handleSupersede,
     'update': handleUpdate,
-    'delete': handleDelete
+    'delete': handleDelete,
+    'dismiss': handleDismiss
 };
 /**
  * Route to appropriate subcommand handler
  */
 async function routeCommand(args) {
-    const { subcommand, subArgs, clearDir } = parseRouterArgs(args);
+    const { subcommand, subArgs, clearDir, session } = parseRouterArgs(args);
     if (!clearDir) {
         return {
             success: false,
@@ -295,11 +377,11 @@ async function routeCommand(args) {
     }
     // Check for direct handler match
     if (subcommand in subcommandHandlers) {
-        return subcommandHandlers[subcommand](subArgs, clearDir);
+        return subcommandHandlers[subcommand](subArgs, clearDir, session);
     }
     // Check if subcommand looks like a knowledge ID (treat as show)
     if (isKnowledgeId(subcommand)) {
-        return handleShow([subcommand, ...subArgs], clearDir);
+        return handleShow([subcommand, ...subArgs], clearDir, session);
     }
     // Unknown subcommand - show help
     return {
@@ -313,7 +395,8 @@ async function routeCommand(args) {
             '  deprecate <id>    - Deprecate entry\n' +
             '  update <id>           - Update entry fields\n' +
             '  delete <id>           - Permanently delete entry\n' +
-            '  supersede <old> <new> - Replace entry with another\n\n' +
+            '  supersede <old> <new> - Replace entry with another\n' +
+            '  dismiss <id>          - Dismiss deprecation warning without superseding\n\n' +
             'Note: search, load, index, capture are handled by existing CLIs.',
         subcommand: 'help'
     };

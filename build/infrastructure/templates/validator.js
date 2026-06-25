@@ -117,7 +117,6 @@ class TemplateValidator {
         // Pre-load all schemas if caching enabled
         if (this.cacheSchemas) {
             const templateNames = [
-                'session-handoff',
                 'workpackage',
                 'technical-decision',
                 'business-rule',
@@ -283,7 +282,6 @@ class TemplateValidator {
      */
     getRequiredFields(name) {
         const requiredByTemplate = {
-            'session-handoff': ['sessionNumber', 'date', 'workpackage', 'tokensEnd', 'status', 'summary', 'completed', 'nextSteps'],
             'workpackage': ['id', 'title', 'status', 'type', 'priority', 'description', 'successCriteria'],
             'technical-decision': ['id', 'sessionId', 'title', 'date', 'status', 'category', 'impact', 'context', 'decision', 'rationale'],
             'business-rule': ['id', 'sessionId', 'name', 'category', 'priority', 'effectiveDate', 'authority', 'ruleStatement', 'logic', 'validations'],

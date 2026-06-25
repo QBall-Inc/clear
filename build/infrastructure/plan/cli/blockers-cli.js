@@ -11,11 +11,12 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const registry_1 = require("../registry");
 const parse_args_1 = require("../../cli/parse-args");
+const validation_1 = require("../../validation");
 /**
  * Parse command line arguments
  */
 function parseArgs() {
-    return (0, parse_args_1.parseCliArgs)({ clearDir: '.clear' }, [
+    return (0, parse_args_1.parseCliArgs)({ clearDir: './.clear' }, [
         { prefix: '--phase=', apply: (v, o) => { o.phaseId = v; } }
     ]);
 }
@@ -56,8 +57,8 @@ function formatBlockersContext(blockers, suggestions) {
                 }
                 break;
             case 'milestone_risk': {
-                const timePct = blocker.timeConsumed !== undefined ? Math.round(blocker.timeConsumed * 100) : 0;
-                const progressPct = blocker.progress !== undefined ? Math.round(blocker.progress * 100) : 0;
+                const timePct = blocker.timeConsumed !== undefined ? Math.round(blocker.timeConsumed) : 0;
+                const progressPct = blocker.progress !== undefined ? Math.round(blocker.progress) : 0;
                 lines.push(`${i + 1}. ${icon} ${blocker.milestone} at risk (${timePct}% time, ${progressPct}% progress)`);
                 if (blocker.description) {
                     lines.push(`   → ${blocker.description}`);
@@ -91,14 +92,18 @@ function formatBlockersContext(blockers, suggestions) {
  * Main blockers operation
  */
 function detectBlockers(options) {
-    const registry = new registry_1.PlanRegistryManager(options.clearDir);
+    const registry = new registry_1.PlanRegistryManager((0, validation_1.resolveClearDir)(options.clearDir).clearSubdir);
     // Load plan
     const plan = registry.loadPlan();
     if (!plan) {
+        const text = 'No plan found';
         return {
+            success: false,
+            message: text,
+            additionalContext: text,
             blockers: [],
             status: 'error',
-            error: 'No plan found'
+            error: text
         };
     }
     // Detect blockers
@@ -111,14 +116,20 @@ function detectBlockers(options) {
     state.lastActivity = new Date().toISOString();
     registry.saveState(state);
     if (blockers.length === 0) {
+        const text = '✅ No blockers detected. All dependencies satisfied.';
         return {
-            additionalContext: '✅ No blockers detected. All dependencies satisfied.',
+            success: true,
+            message: text,
+            additionalContext: text,
             blockers: [],
             status: 'clear'
         };
     }
+    const text = formatBlockersContext(blockers, suggestions);
     return {
-        additionalContext: formatBlockersContext(blockers, suggestions),
+        success: true,
+        message: text,
+        additionalContext: text,
         blockers,
         suggestions,
         status: 'blockers_found'
@@ -147,6 +158,9 @@ if (require.main === module) {
     catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         const result = {
+            success: false,
+            message: errorMessage,
+            additionalContext: errorMessage,
             blockers: [],
             status: 'error',
             error: errorMessage

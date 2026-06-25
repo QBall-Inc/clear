@@ -15,6 +15,18 @@ allowed-tools:
 
 Validate CLEAR framework state across all domains (sync, workpackage, plan, knowledge, session) and optionally auto-repair fixable issues. Routes to the debug CLI tool for execution.
 
+## Plugin Root Resolution
+
+CLI commands in this skill reference `$CLEAR_PLUGIN_ROOT` — a `.claude/settings.json` env var the shell expands. The SessionStart hook persists it, but settings env vars load at session **launch**, so on a brand-new consumer's **first session** (before its next restart) the variable is empty and `node "$CLEAR_PLUGIN_ROOT/build/..."` fails with `MODULE_NOT_FOUND`.
+
+**First-session bootstrap** — if `$CLEAR_PLUGIN_ROOT` is empty, set it inline in the *same* Bash call as the CLI (each Bash call is a fresh shell, so a separate `export` would not carry over):
+
+```bash
+export CLEAR_PLUGIN_ROOT="${CLEAR_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+```
+
+Prepend it to the CLI in one shell line: `export CLEAR_PLUGIN_ROOT="${CLEAR_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}"; <node "$CLEAR_PLUGIN_ROOT/build/..." command>`. `${CLAUDE_PLUGIN_ROOT}` resolves in this SKILL.md body to the actually-loaded plugin path; once the consumer restarts, `$CLEAR_PLUGIN_ROOT` is populated and the assignment is a harmless no-op.
+
 ---
 
 ## When to Use This Skill
@@ -36,18 +48,33 @@ Validate CLEAR framework state across all domains (sync, workpackage, plan, know
 
 ---
 
+## Command Reference
+
+Debug CLI at `$CLEAR_PLUGIN_ROOT/build/infrastructure/sync/cli/`.
+
+| Action | CLI Command |
+|--------|-------------|
+| Full diagnostic (all domains) | `debug-cli` |
+| Domain-specific diagnostic | `debug-cli <domain>` (sync, workpackage, plan, knowledge, session, install) |
+| Auto-repair fixable issues | `debug-cli --repair` |
+| Dual-ID integrity check | `debug-cli --check-ids` |
+| Combined (domain + repair) | `debug-cli <domain> --repair` |
+
+---
+
 ## Usage
 
 ```
 /cf-debug                        # Full diagnostic across all domains
 /cf-debug workpackage            # Focus on a specific domain
+/cf-debug install                # Verify Claude Code install wiring (run after restart)
 /cf-debug --check-ids            # Include dual-ID integrity validation
 /cf-debug --repair               # Attempt auto-repair of fixable issues
 /cf-debug sync --repair          # Domain-specific diagnostic with repair
 ```
 
 **Arguments:**
-- `[domain]`: Optional. One of `sync`, `workpackage`, `plan`, `knowledge`, `session`
+- `[domain]`: Optional. One of `sync`, `workpackage`, `plan`, `knowledge`, `session`, `install`
 - `--repair`: Attempt auto-repair of fixable issues
 - `--check-ids`: Include dual-ID integrity validation
 
@@ -78,7 +105,7 @@ ARGS=""
 
 for arg in $ARGUMENTS; do
   case "$arg" in
-    sync|workpackage|plan|knowledge|session)
+    sync|workpackage|plan|knowledge|session|install)
       ARGS="$ARGS $arg"
       ;;
     --repair)
@@ -103,6 +130,7 @@ The CLI checks the following by domain:
 | **workpackage** | Registry exists, no duplicate systemIds, all entries have systemIds |
 | **plan** | Plans directory exists, master-plan.yaml validity, no duplicate phase IDs, no position gaps |
 | **knowledge** | Knowledge directory exists, index.db exists |
+| **install** | Claude Code install wiring: `.claude/settings.json` statusLine points at the CLEAR statusline script (present + executable) and the CLEAR environment variables are set. Run after restarting Claude Code to confirm the statusline is wired. |
 | **cross-domain** | Active workpackage/phase references exist, knowledge links valid |
 | **dual-ID** (--check-ids) | Knowledge links use systemId format, workpackageId/phaseId formats correct |
 

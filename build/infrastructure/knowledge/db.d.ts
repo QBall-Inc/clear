@@ -6,6 +6,13 @@
  */
 import { KnowledgeEntry } from './types';
 /**
+ * SQLite schema version for migrations.
+ * Exported so generators (parser.ts generateKnowledgeMarkdown, capture-cli.ts
+ * createEntry) can default to the current version without hardcoding a literal
+ * that drifts on every schema bump.
+ */
+export declare const SCHEMA_VERSION = 8;
+/**
  * Knowledge database manager
  */
 export declare class KnowledgeDatabase {
@@ -41,6 +48,26 @@ export declare class KnowledgeDatabase {
      * Adds archived_at, deprecation_type, and superseded_at columns for unified supersession
      */
     private migrateToV4;
+    /**
+     * Migrate database from v4 to v5
+     * Adds schema_version column for entry-level schema tracking
+     */
+    private migrateToV5;
+    /**
+     * Migrate database from v5 to v6
+     * Adds surfaced_count column for surfacing observability
+     */
+    private migrateToV6;
+    /**
+     * Migrate database from v6 to v7
+     * Adds supersession_reviewed column for deprecation surfacing lifecycle
+     */
+    private migrateToV7;
+    /**
+     * Migrate database from v7 to v8
+     * Adds 12 category-specific nullable TEXT columns for IW/SH/PROC types.
+     */
+    private migrateToV8;
     /**
      * Get current schema version
      * @returns Schema version number
@@ -157,6 +184,13 @@ export declare class KnowledgeDatabase {
      */
     updateSupersessionFields(id: string, supersededAt: string, deprecationType: 'obsolete' | 'superseded'): boolean;
     /**
+     * Set supersession_reviewed flag on an entry (Schema v7)
+     * @param id - Entry ID
+     * @param reviewed - True to mark as reviewed, false to unmark
+     * @returns True if updated
+     */
+    setSupersessionReviewed(id: string, reviewed: boolean): boolean;
+    /**
      * Deprecate a knowledge entry
      * @param id - Entry ID
      * @param reason - Optional reason for deprecation
@@ -183,6 +217,12 @@ export declare class KnowledgeDatabase {
      * Convert database row to KnowledgeEntry
      */
     private rowToEntry;
+    /**
+     * Batch-update surfaced_count from aggregated JSONL data.
+     * @param counts - Map of entry_id to increment value
+     * @returns Number of entries updated
+     */
+    updateSurfacedCounts(counts: Map<string, number>): number;
     /**
      * Get entries linked to a specific workpackage
      * @param workpackageId - Workpackage systemId (e.g., "wp-a1b2c3d4")

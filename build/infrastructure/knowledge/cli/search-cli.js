@@ -62,7 +62,7 @@ const tfidf_1 = require("../tfidf");
 function parseArgs() {
     const args = process.argv.slice(2);
     const options = {
-        clearDir: '.clear',
+        clearDir: './.clear',
         maxResults: types_1.DEFAULT_KNOWLEDGE_CONFIG.search.max_results,
         detectOnly: false,
         includeSuperseded: false
@@ -87,27 +87,51 @@ function parseArgs() {
             options.includeSuperseded = true;
         }
     }
-    options.clearDir = (0, validation_1.validateBasePath)(options.clearDir);
+    // Normalize to the .clear subdir, tolerant of either --clear-dir convention.
+    options.clearDir = (0, validation_1.resolveClearDir)((0, validation_1.validateBasePath)(options.clearDir)).clearSubdir;
     return options;
 }
 // ==============================================================================
 // Search Implementation
 // ==============================================================================
 /**
- * Load entries from JSON fallback when SQLite unavailable
+ * Load entries from the JSON index export (index.json) when SQLite is unavailable.
+ *
+ * Returns the entries plus an `available` flag. `available: false` means the index
+ * export itself could not be read — absent or unparseable — which the caller surfaces
+ * as "search index unavailable" rather than a false "no entries". index.json is a DB
+ * export (written by index-cli), so it does not exist when the database never
+ * initialized; distinguishing this from a readable-but-empty index is the whole point.
  */
 function loadFromJsonFallback(clearDir) {
     const jsonPath = path.join(clearDir, 'knowledge', 'index.json');
     if (!fs.existsSync(jsonPath)) {
-        return [];
+        return { entries: [], available: false };
     }
     try {
         const content = fs.readFileSync(jsonPath, 'utf-8');
         const index = JSON.parse(content);
-        return index.entries || [];
+        return { entries: Array.isArray(index.entries) ? index.entries : [], available: true };
     }
     catch {
-        return [];
+        return { entries: [], available: false };
+    }
+}
+/**
+ * Count knowledge entries persisted on disk (knowledge/entries/*.md). Used to tell a
+ * genuinely-empty / fresh project (nothing captured) apart from "entries exist but the
+ * index is unreadable" — only the latter is an honest no_knowledge_base condition.
+ */
+function countEntriesOnDisk(clearDir) {
+    const entriesDir = path.join(clearDir, 'knowledge', 'entries');
+    if (!fs.existsSync(entriesDir)) {
+        return 0;
+    }
+    try {
+        return fs.readdirSync(entriesDir).filter(f => f.endsWith('.md')).length;
+    }
+    catch {
+        return 0;
     }
 }
 /**
@@ -335,7 +359,6 @@ function toSummary(results) {
 function loadKnowledgeEntries(clearDir, includeSuperseded) {
     const dbPath = path.join(clearDir, 'knowledge', 'index.db');
     const db = new db_1.KnowledgeDatabase(clearDir);
-    let entries = [];
     let dbInitialized = false;
     if (fs.existsSync(dbPath)) {
         try {
@@ -348,14 +371,16 @@ function loadKnowledgeEntries(clearDir, includeSuperseded) {
     if (dbInitialized) {
         try {
             // Get all entries (we'll filter by status later to include superseded if requested)
-            entries = includeSuperseded
+            const entries = includeSuperseded
                 ? [...db.getAllEntries('active'), ...db.getAllEntries('superseded')]
                 : db.getAllEntries('active');
             db.close();
+            return { entries, indexAvailable: true };
         }
         catch {
             db.close();
-            entries = loadFromJsonFallback(clearDir);
+            // DB opened but the read failed — fall through to the JSON export and report
+            // availability from whether that export is itself readable.
         }
     }
     else {
@@ -363,12 +388,16 @@ function loadKnowledgeEntries(clearDir, includeSuperseded) {
             db.close();
         }
         catch { /* ignore */ }
-        entries = loadFromJsonFallback(clearDir);
-        if (!includeSuperseded) {
-            entries = entries.filter(e => e.status === 'active');
-        }
     }
-    return entries;
+    // JSON export fallback. `indexAvailable` reflects whether ANY index source was
+    // readable: false means both the DB and its JSON export are unreadable, i.e. search
+    // is blind. That is distinct from a readable-but-empty index (genuinely zero entries).
+    const fallback = loadFromJsonFallback(clearDir);
+    let entries = fallback.entries;
+    if (!includeSuperseded) {
+        entries = entries.filter(e => e.status === 'active');
+    }
+    return { entries, indexAvailable: fallback.available };
 }
 /**
  * Deduplicate across priority levels and limit results per level.
@@ -439,7 +468,21 @@ function performSearch(options) {
         };
     }
     // Load entries
-    const entries = loadKnowledgeEntries(clearDir, includeSuperseded);
+    const { entries, indexAvailable } = loadKnowledgeEntries(clearDir, includeSuperseded);
+    // Distinguish "search index unavailable" (search is blind) from "index readable but
+    // genuinely empty". A false 'no_results' here would let a future session conclude
+    // nothing was captured and re-capture duplicates or skip reuse. Only "blind" when
+    // entries actually exist on disk; a fresh project with nothing captured is genuinely
+    // empty, not unavailable.
+    if (!indexAvailable && countEntriesOnDisk(clearDir) > 0) {
+        return {
+            script: 'knowledge-search',
+            success: false,
+            status: 'no_knowledge_base',
+            additionalContext: '[CLEAR Search] Knowledge index unavailable — the search index (SQLite database / its JSON export) could not be read, so captured entries are not searchable. Entries already saved on disk are unaffected. Run /cf-debug to diagnose and get the rebuild + reindex remediation.',
+            matchCount: 0
+        };
+    }
     if (entries.length === 0) {
         return {
             script: 'knowledge-search',

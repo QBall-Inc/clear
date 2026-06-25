@@ -3,8 +3,7 @@
  * Sync State Manager (WF-4)
  *
  * Central aggregation point for cross-domain state. Maintains the
- * sync-state.json file with summaries from all domains and
- * provides change detection for efficient sync operations.
+ * sync-state.json file with summaries from all domains.
  *
  * Note: Renamed from "SharedContextHub" to "SyncStateManager" to avoid
  * collision with src/infrastructure/context/manager.ts (hook contributions).
@@ -48,24 +47,96 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SyncStateManager = void 0;
+exports.mergeOntoDefaults = mergeOntoDefaults;
 exports.createSyncStateManager = createSyncStateManager;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
-const crypto = __importStar(require("crypto"));
+const validation_1 = require("../validation");
 const types_1 = require("./types");
 // ==============================================================================
 // CONSTANTS
 // ==============================================================================
 const SYNC_STATE_FILE = 'sync-state.json';
 const STATE_DIR = '.clear/state';
-// State file names for hash calculation
-const STATE_FILES = {
-    session: 'session.json',
-    workpackage: 'workpackage.json',
-    plan: 'plan.json',
-    knowledge: 'knowledge.json',
-    sync: 'sync-state.json'
-};
+// ==============================================================================
+// SCHEMA NORMALIZATION
+// ==============================================================================
+function isPlainObject(value) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+function structuralClass(value) {
+    if (Array.isArray(value))
+        return 'array';
+    if (isPlainObject(value))
+        return 'object';
+    return 'primitive';
+}
+/**
+ * Deep-merge a parsed sync-state onto the current default shape (schema
+ * upgrade-on-read). Parsed values WIN when they are STRUCTURALLY COMPATIBLE with
+ * the default: an existing key (and any extra key the parsed state carries) whose
+ * value is the same structural class as the default — both objects, both arrays,
+ * both primitives — is preserved verbatim. Objects recurse; arrays are leaf values
+ * (the parsed array is taken whole, never element-merged).
+ *
+ * Two cases fall back to the default (and flag the result as upgraded):
+ *   1. A default key ABSENT from the parsed state.
+ *   2. A present key whose parsed value is the WRONG structural class for the slot
+ *      (e.g. `recentEntries` stored as a string, or a domain object stored as a
+ *      scalar). Preferring the default here keeps the typed mutators from
+ *      dereferencing an incompatible type at runtime.
+ *
+ * Why this exists: real consumer states are schema-divergent. A first-generation
+ * consumer state can lack the `links` key and the `deprecatedReferences` field,
+ * yet still pass the top-level structural guard, so without normalization the raw
+ * state reaches the typed mutators and they dereference `undefined` / call array
+ * methods on a non-array. Normalizing on load closes that crash class while keeping
+ * the consumer's real data intact.
+ *
+ * @returns the merged object plus `added` = true iff at least one default key was
+ *   filled or coerced (the caller marks the manager dirty so the next save persists
+ *   the upgraded shape).
+ */
+function mergeOntoDefaults(parsed, defaults) {
+    let added = false;
+    const merged = { ...parsed };
+    for (const key of Object.keys(defaults)) {
+        if (!(key in parsed)) {
+            merged[key] = defaults[key];
+            added = true;
+            continue;
+        }
+        const parsedClass = structuralClass(parsed[key]);
+        const defaultClass = structuralClass(defaults[key]);
+        if (parsedClass === 'object' && defaultClass === 'object') {
+            const sub = mergeOntoDefaults(parsed[key], defaults[key]);
+            merged[key] = sub.merged;
+            if (sub.added)
+                added = true;
+        }
+        else if (parsedClass !== defaultClass) {
+            // Structural-type mismatch: the parsed value is incompatible with the
+            // canonical shape for this slot. Prefer the default so downstream typed
+            // mutators operate on the expected type.
+            merged[key] = defaults[key];
+            added = true;
+        }
+        // else: same structural class (both arrays or both primitives) — preserve parsed.
+    }
+    return { merged, added };
+}
+/**
+ * Map a knowledge entry status onto the narrower KnowledgeLink status union.
+ * KnowledgeStatus carries a 'pending' value that the link schema has no slot for;
+ * a pending entry is treated as active for linking purposes. Any unrecognized
+ * value also collapses to 'active' (fail-safe — a link is never dropped over an
+ * unknown status).
+ */
+function toLinkStatus(status) {
+    return status === 'deprecated' || status === 'superseded' || status === 'archived'
+        ? status
+        : 'active';
+}
 // ==============================================================================
 // SYNC STATE MANAGER
 // ==============================================================================
@@ -85,19 +156,16 @@ class SyncStateManager {
     /**
      * Create a new SyncStateManager
      * @param basePath - Project root directory
-     * @param config - Sync configuration
      */
-    constructor(basePath, config) {
+    constructor(basePath) {
         this.dirty = false;
-        this.basePath = basePath;
-        this.config = {
-            mode: config?.mode ?? 'on_change',
-            safetyInterval: config?.safetyInterval ?? 5,
-            changeDetection: {
-                useChecksums: config?.changeDetection?.useChecksums ?? true,
-                useMtime: config?.changeDetection?.useMtime ?? true
-            }
-        };
+        // Defense-in-depth: validate the path and strip any '.clear' suffix the
+        // upstream caller may have conflated into basePath. validateBasePath
+        // rejects '..' traversal sequences; stripClearSuffix prevents the
+        // `.clear/.clear/<sub>` duplicate-hierarchy leak class. Constructors
+        // are direct-call surfaces (not all callers go through CLI parseArgs),
+        // so input validation belongs here as well.
+        this.basePath = (0, validation_1.stripClearSuffix)((0, validation_1.validateBasePath)(basePath), 'SyncStateManager');
         this.state = (0, types_1.createDefaultSyncState)();
     }
     // ============================================================================
@@ -108,12 +176,6 @@ class SyncStateManager {
      */
     getSyncStatePath() {
         return path.join(this.basePath, STATE_DIR, SYNC_STATE_FILE);
-    }
-    /**
-     * Get the full path to a state file
-     */
-    getStatePath(domain) {
-        return path.join(this.basePath, STATE_DIR, STATE_FILES[domain]);
     }
     /**
      * Ensure the state directory exists
@@ -142,8 +204,28 @@ class SyncStateManager {
                 this.state = (0, types_1.createDefaultSyncState)();
                 return false;
             }
-            this.state = parsed;
-            this.dirty = false;
+            // Schema upgrade-on-read. isSyncState() only guarantees the top-level
+            // domains exist; schema-divergent consumer states (e.g. a first-generation
+            // state with no `links` key) would otherwise reach the typed mutators and
+            // crash. Deep-merge onto the current default shape — structurally-compatible
+            // parsed values win, absent or wrong-typed default keys are filled. Mark
+            // dirty only when keys were added/coerced so the upgraded shape persists on
+            // the next save without spuriously dirtying a complete state.
+            const { merged, added } = mergeOntoDefaults(parsed, (0, types_1.createDefaultSyncState)());
+            this.state = merged;
+            this.dirty = added;
+            // Detect ratio-leak progress values. The canonical scale is 0-100; a
+            // strictly-sub-1 nonzero value from a legacy writer would silently
+            // re-introduce mixed-scale arithmetic if consumed as percent. Warn so
+            // the operator (Claude) can re-run progress on the affected WP. No
+            // auto-rescale — the boundary value 1 is a legitimate 1% and rescaling
+            // would double-count.
+            const wpProgress = this.state.workpackage?.progress;
+            if (typeof wpProgress === 'number' && wpProgress > 0 && wpProgress < 1) {
+                process.stderr.write(`[SyncStateManager] workpackage.progress=${wpProgress} on load is below the 1% floor — ` +
+                    `expected 0-100 percentage range, got a sub-1 value (likely a stale ratio writer). ` +
+                    `Run \`/cf-workpackage progress\` on the active workpackage to recompute.\n`);
+            }
             return true;
         }
         catch (error) {
@@ -161,7 +243,13 @@ class SyncStateManager {
             this.ensureStateDir();
             const statePath = this.getSyncStatePath();
             this.state.lastUpdated = new Date().toISOString();
-            fs.writeFileSync(statePath, JSON.stringify(this.state, null, 2), 'utf-8');
+            // Atomic write — serialize to a sibling temp file, then rename over the
+            // target. rename(2) is atomic on the same filesystem, so a crash mid-write
+            // leaves the prior sync-state.json intact rather than a truncated file. The
+            // temp sits in the same dir (same FS) as the target.
+            const tmpPath = `${statePath}.tmp`;
+            fs.writeFileSync(tmpPath, JSON.stringify(this.state, null, 2), 'utf-8');
+            fs.renameSync(tmpPath, statePath);
             this.dirty = false;
             return true;
         }
@@ -175,115 +263,6 @@ class SyncStateManager {
      */
     isDirty() {
         return this.dirty;
-    }
-    // ============================================================================
-    // CHANGE DETECTION
-    // ============================================================================
-    /**
-     * Calculate SHA-256 hash of a file's contents
-     * @param filePath - Path to file
-     * @returns Hash string or empty string if file doesn't exist
-     */
-    calculateFileHash(filePath) {
-        if (!fs.existsSync(filePath)) {
-            return '';
-        }
-        try {
-            const content = fs.readFileSync(filePath, 'utf-8');
-            return crypto.createHash('sha256').update(content).digest('hex');
-        }
-        catch {
-            return '';
-        }
-    }
-    /**
-     * Calculate hashes for all domain state files
-     * @returns StateHashes object with current hashes
-     */
-    calculateStateHashes() {
-        return {
-            session: this.calculateFileHash(this.getStatePath('session')),
-            workpackage: this.calculateFileHash(this.getStatePath('workpackage')),
-            plan: this.calculateFileHash(this.getStatePath('plan')),
-            knowledge: this.calculateFileHash(this.getStatePath('knowledge'))
-        };
-    }
-    /**
-     * Detect changes across all domains
-     * @returns ChangeDetectionResult with details about changes
-     */
-    detectChanges() {
-        const currentHashes = this.calculateStateHashes();
-        const previousHashes = this.state.stateHashes;
-        const changedDomains = [];
-        // Check each domain for changes
-        if (this.config.changeDetection.useChecksums) {
-            if (currentHashes.session !== previousHashes.session) {
-                changedDomains.push('session');
-            }
-            if (currentHashes.workpackage !== previousHashes.workpackage) {
-                changedDomains.push('workpackage');
-            }
-            if (currentHashes.plan !== previousHashes.plan) {
-                changedDomains.push('plan');
-            }
-            if (currentHashes.knowledge !== previousHashes.knowledge) {
-                changedDomains.push('knowledge');
-            }
-        }
-        // Check mtime as fallback/additional check
-        if (this.config.changeDetection.useMtime && changedDomains.length === 0) {
-            const domains = ['session', 'workpackage', 'plan', 'knowledge'];
-            const syncStateMtime = this.getFileMtime(this.getSyncStatePath());
-            for (const domain of domains) {
-                const statePath = this.getStatePath(domain);
-                const stateMtime = this.getFileMtime(statePath);
-                if (stateMtime > syncStateMtime) {
-                    changedDomains.push(domain);
-                }
-            }
-        }
-        // Check safety interval
-        const fullSyncRequired = this.state.promptsSinceSync >= this.config.safetyInterval;
-        return {
-            hasChanges: changedDomains.length > 0,
-            changedDomains,
-            currentHashes,
-            previousHashes,
-            fullSyncRequired
-        };
-    }
-    /**
-     * Get file modification time
-     * @param filePath - Path to file
-     * @returns Modification time in milliseconds, or 0 if file doesn't exist
-     */
-    getFileMtime(filePath) {
-        if (!fs.existsSync(filePath)) {
-            return 0;
-        }
-        try {
-            const stat = fs.statSync(filePath);
-            return stat.mtimeMs;
-        }
-        catch {
-            return 0;
-        }
-    }
-    /**
-     * Check if sync is needed based on configuration
-     * @returns True if sync should be performed
-     */
-    shouldSync() {
-        if (this.config.mode === 'always') {
-            return true;
-        }
-        if (this.config.mode === 'manual') {
-            return false;
-        }
-        // on_change mode
-        const detection = this.detectChanges();
-        return detection.hasChanges || detection.fullSyncRequired;
     }
     // ============================================================================
     // STATE ACCESSORS
@@ -324,12 +303,6 @@ class SyncStateManager {
     getLinks() {
         return JSON.parse(JSON.stringify(this.state.links));
     }
-    /**
-     * Get prompts since last sync
-     */
-    getPromptsSinceSync() {
-        return this.state.promptsSinceSync;
-    }
     // ============================================================================
     // CONTEXT UPDATERS
     // ============================================================================
@@ -345,7 +318,8 @@ class SyncStateManager {
         this.dirty = true;
     }
     /**
-     * Update workpackage summary
+     * Update workpackage summary. The `progress` field on WorkpackageSummary is
+     * 0-100 percentage per the calculateProgress contract.
      * @param workpackage - New workpackage summary
      */
     updateWorkpackageSummary(workpackage) {
@@ -354,6 +328,55 @@ class SyncStateManager {
             ...workpackage
         };
         this.dirty = true;
+    }
+    /**
+     * Clear the active-workpackage block to its empty-identity canonical form.
+     *
+     * Use after a lifecycle transition (complete, pause-to-no-active) leaves
+     * no active workpackage. This is the single source of truth for the
+     * "no active WP" sync-state shape — callers should prefer it over
+     * inlining the empty-field literal at every site.
+     *
+     * Canonical shape applied: { systemId: '', displayId: '', title: '',
+     * progress: 0, sessionId: '', status: undefined }.
+     */
+    clearActiveWorkpackage() {
+        this.updateWorkpackageSummary({
+            systemId: '',
+            displayId: '',
+            title: '',
+            progress: 0,
+            sessionId: '',
+            status: undefined,
+        });
+    }
+    /**
+     * Set the previous-workpackage snapshot. (WP-DF3 AC5 / S167 G5 fix)
+     *
+     * Called when a WP transitions out of `in_progress` via pause OR auto-pause-
+     * on-switch, so resume-context surfaces can show "Previously you were
+     * working on X, paused at N%". Prior to this mutator the
+     * `previousWorkpackage` block had zero writers despite being declared in
+     * the SyncState schema.
+     *
+     * @param prev - Snapshot of the WP being paused
+     */
+    updatePreviousWorkpackage(prev) {
+        this.state.previousWorkpackage = { ...prev };
+        this.dirty = true;
+    }
+    /**
+     * Clear the previous-workpackage snapshot. (WP-DF3 AC5 / S167 G5 fix)
+     *
+     * Use when the previously-paused WP is resumed OR when its identity is no
+     * longer relevant (e.g., it was completed). Leaving stale data here would
+     * mislead resume-context surfaces.
+     */
+    clearPreviousWorkpackage() {
+        if (this.state.previousWorkpackage !== undefined) {
+            delete this.state.previousWorkpackage;
+            this.dirty = true;
+        }
     }
     /**
      * Update plan summary
@@ -435,26 +458,10 @@ class SyncStateManager {
         return this.state.links.workpackageKnowledge[workpackageId]?.map(l => ({ ...l })) ?? [];
     }
     /**
-     * Update state hashes after sync
-     * @param hashes - New state hashes
-     */
-    updateStateHashes(hashes) {
-        this.state.stateHashes = { ...hashes };
-        this.dirty = true;
-    }
-    /**
      * Record a full sync
      */
     recordFullSync() {
         this.state.lastFullSync = new Date().toISOString();
-        this.state.promptsSinceSync = 0;
-        this.dirty = true;
-    }
-    /**
-     * Increment prompts since sync counter
-     */
-    incrementPromptCounter() {
-        this.state.promptsSinceSync++;
         this.dirty = true;
     }
     /**
@@ -497,11 +504,95 @@ class SyncStateManager {
         }
         this.dirty = true;
     }
+    /**
+     * Rebuild the denormalized knowledge cache (knowledge.recentEntries and the
+     * links.workpackageKnowledge map) from the knowledge database — the
+     * materialized source-of-truth. This is the RECOVERY path for sync-state
+     * drift: when a capture or link never propagated, or a project was imported
+     * or migrated, the cache can go empty/stale while the DB still holds the real
+     * entries (the empty "Recent Knowledge" dashboard panel symptom). Unlike
+     * reconcile, which only PRUNES stale links, this repopulates from scratch.
+     *
+     * The caller supplies the entries (so this manager stays free of the native
+     * knowledge-db dependency). Ordering is recomputed here from creation time, so
+     * the projection is deterministic regardless of the caller's input order.
+     *
+     * Idempotent: each field is replaced only when the freshly-projected value
+     * differs from the current one, so a second run over an already-coherent store
+     * is a no-op — no dirty flag, no save, no backup churn. A genuinely-empty
+     * knowledge store rebuilds to an empty-but-valid cache (no over-correction).
+     *
+     * Scope: rebuilds the two load-bearing, consumed fields only.
+     * knowledge.totalCount is intentionally NOT touched here — it is deferred to a
+     * follow-up that wires it as a real dashboard-surfaced field and unifies the
+     * two divergent SyncState knowledge shapes. pendingCaptures and
+     * deprecatedReferences are owned by the capture and deprecation lifecycles and
+     * are likewise left untouched.
+     *
+     * @param entries - All knowledge entries from the DB (source-of-truth)
+     * @param maxRecent - Cap for recentEntries (default 10, matches addRecentKnowledgeEntry)
+     * @returns observability counts: entries considered, recent kept, WP groups, total links
+     */
+    rebuildKnowledgeCache(entries, maxRecent = 10) {
+        // Most-recent-first by creation time; tie-break by id (descending) so the
+        // ordering is fully deterministic even when timestamps collide.
+        const byCreatedDesc = [...entries].sort((a, b) => b.created.localeCompare(a.created) || b.id.localeCompare(a.id));
+        const recentEntries = byCreatedDesc.slice(0, maxRecent).map(e => e.id);
+        // Group links by the entry's materialized workpackage_id. Entries with no WP
+        // association (null/empty) are intentionally dropped — that is the recovery
+        // property for stale links: an unlinked entry whose DB workpackage_id was
+        // cleared no longer appears in the rebuilt map.
+        const workpackageKnowledge = {};
+        for (const e of byCreatedDesc) {
+            const wpId = e.workpackageId;
+            if (!wpId)
+                continue;
+            (workpackageKnowledge[wpId] ?? (workpackageKnowledge[wpId] = [])).push({
+                id: e.id,
+                workpackageId: wpId,
+                phaseId: e.phaseId ?? '',
+                title: e.title,
+                linkedAt: e.created,
+                linkedBy: 'auto',
+                status: toLinkStatus(e.status),
+                deprecation_type: e.deprecationType ?? null,
+            });
+        }
+        // Replace only on actual change (idempotency) so an already-coherent store is a true no-op.
+        const recentChanged = JSON.stringify(this.state.knowledge.recentEntries) !== JSON.stringify(recentEntries);
+        const linksChanged = JSON.stringify(this.state.links.workpackageKnowledge) !== JSON.stringify(workpackageKnowledge);
+        if (recentChanged) {
+            this.state.knowledge.recentEntries = recentEntries;
+        }
+        if (linksChanged) {
+            this.state.links.workpackageKnowledge = workpackageKnowledge;
+        }
+        if (recentChanged || linksChanged) {
+            this.dirty = true;
+        }
+        return {
+            entries: entries.length,
+            recent: recentEntries.length,
+            workpackages: Object.keys(workpackageKnowledge).length,
+            links: Object.values(workpackageKnowledge).reduce((n, links) => n + links.length, 0),
+        };
+    }
     // ============================================================================
     // VALIDATION
     // ============================================================================
     /**
      * Validate sync state integrity
+     *
+     * Null-meaning contract (consumed by createSyncState in project-init.ts):
+     *   - workpackage: null    → "no active WP yet" (fresh-init state)
+     *   - plan: null           → "no plan created yet"
+     *   - knowledge.recentEntries: []  → empty array (never null)
+     *   - links: undefined     → "no cross-domain links yet" (fresh init may omit field entirely)
+     *   - lastFullSync: null   → "no full sync ever performed"
+     *
+     * All accesses to nullable state blocks must guard for null/undefined to avoid
+     * runtime crashes on freshly-initialized sync-state.json files.
+     *
      * @returns Array of validation error messages (empty if valid)
      */
     validate() {
@@ -514,32 +605,39 @@ class SyncStateManager {
         if (!this.state.lastUpdated) {
             errors.push('Missing lastUpdated timestamp');
         }
-        if (!this.state.lastFullSync) {
+        // lastFullSync may be null = no full sync ever performed (fresh init);
+        // only flag if the field is missing entirely (undefined) rather than
+        // explicitly null per the null-meaning contract above.
+        if (this.state.lastFullSync === undefined) {
             errors.push('Missing lastFullSync timestamp');
         }
-        // Validate workpackage summary has systemId
-        if (this.state.workpackage.systemId &&
+        // Validate workpackage summary has systemId (null = no active WP yet, skip)
+        if (this.state.workpackage &&
+            this.state.workpackage.systemId &&
             !this.state.workpackage.systemId.startsWith('wp-') &&
             this.state.workpackage.systemId !== '') {
             errors.push(`Invalid workpackage systemId format: ${this.state.workpackage.systemId}`);
         }
-        // Validate plan summary has phase systemId
-        if (this.state.plan.activePhaseSystemId &&
+        // Validate plan summary has phase systemId (null = no plan created yet, skip)
+        if (this.state.plan &&
+            this.state.plan.activePhaseSystemId &&
             !this.state.plan.activePhaseSystemId.startsWith('ph-') &&
             this.state.plan.activePhaseSystemId !== '') {
             errors.push(`Invalid phase systemId format: ${this.state.plan.activePhaseSystemId}`);
         }
-        // Validate knowledge links have systemIds
-        for (const [wpId, links] of Object.entries(this.state.links.workpackageKnowledge)) {
-            if (!wpId.startsWith('wp-')) {
-                errors.push(`Invalid workpackage systemId in links: ${wpId}`);
-            }
-            for (const link of links) {
-                if (!link.workpackageId.startsWith('wp-')) {
-                    errors.push(`Invalid workpackageId in link ${link.id}: ${link.workpackageId}`);
+        // Validate knowledge links have systemIds (links may be omitted on fresh init)
+        if (this.state.links?.workpackageKnowledge) {
+            for (const [wpId, links] of Object.entries(this.state.links.workpackageKnowledge)) {
+                if (!wpId.startsWith('wp-')) {
+                    errors.push(`Invalid workpackage systemId in links: ${wpId}`);
                 }
-                if (!link.phaseId.startsWith('ph-')) {
-                    errors.push(`Invalid phaseId in link ${link.id}: ${link.phaseId}`);
+                for (const link of links) {
+                    if (!link.workpackageId.startsWith('wp-')) {
+                        errors.push(`Invalid workpackageId in link ${link.id}: ${link.workpackageId}`);
+                    }
+                    if (!link.phaseId.startsWith('ph-')) {
+                        errors.push(`Invalid phaseId in link ${link.id}: ${link.phaseId}`);
+                    }
                 }
             }
         }
@@ -577,11 +675,10 @@ exports.SyncStateManager = SyncStateManager;
 /**
  * Create a SyncStateManager instance
  * @param basePath - Project root directory
- * @param config - Optional sync configuration
  * @returns SyncStateManager instance
  */
-function createSyncStateManager(basePath, config) {
-    const manager = new SyncStateManager(basePath, config);
+function createSyncStateManager(basePath) {
+    const manager = new SyncStateManager(basePath);
     manager.load();
     return manager;
 }

@@ -8,10 +8,6 @@
 import { WorkpackageType, WorkpackagePriority } from '../types';
 /** Maximum length for workpackage title */
 export declare const MAX_TITLE_LENGTH = 80;
-/** Valid workpackage types */
-export declare const VALID_TYPES: WorkpackageType[];
-/** Valid priorities */
-export declare const VALID_PRIORITIES: WorkpackagePriority[];
 /**
  * Error thrown when plan doesn't exist
  */
@@ -62,7 +58,17 @@ export interface CreateWorkpackageInput {
     /** When true, read rich fields from stdin JSON */
     fromStdin?: boolean;
 }
+/**
+ * Create-workpackage CLI output.
+ *
+ * Dual-mode envelope: `additionalContext` is the Claude Code hook spec;
+ * `message` is the canonical CLI shape (read by skill jq queries). Both
+ * carry identical human-readable text — populated by `withEnvelope` at
+ * the CLI boundary.
+ */
 export interface CreateWorkpackageOutput {
+    success?: boolean;
+    message?: string;
     status: 'success' | 'no_plan' | 'phase_not_found' | 'error';
     /** New workpackage display ID */
     workpackageId?: string;
@@ -90,18 +96,6 @@ export declare function validateTitleLength(title: string): {
     valid: boolean;
     suggested?: string;
 };
-/**
- * Validate workpackage type
- * @param type - Type to validate
- * @returns true if valid
- */
-export declare function isValidType(type: string): type is WorkpackageType;
-/**
- * Validate workpackage priority
- * @param priority - Priority to validate
- * @returns true if valid
- */
-export declare function isValidPriority(priority: string): priority is WorkpackagePriority;
 /**
  * Create a new workpackage
  *

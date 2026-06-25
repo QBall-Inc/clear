@@ -9,7 +9,7 @@ Suggests the next workpackage to work on based on dependencies and status.
 ### 1. Run Next CLI
 
 ```bash
-RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/plan/cli/next-cli.js" --clear-dir=.clear 2>/dev/null)
+RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/plan/cli/next-cli.js" --clear-dir=./.clear 2>/dev/null)
 STATUS=$(echo "$RESULT" | jq -r '.status // "error"')
 ```
 
@@ -26,7 +26,7 @@ fi
 ### 3. Display Recommendation
 
 ```bash
-CONTEXT=$(echo "$RESULT" | jq -r '.additionalContext // "No recommendation available"')
+CONTEXT=$(echo "$RESULT" | jq -r '.message // "No recommendation available"')
 echo "$CONTEXT"
 ```
 

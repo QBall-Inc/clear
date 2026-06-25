@@ -5,6 +5,39 @@
  * Implements status viewing commands: default, show, list
  * Based on P2.7 Feature Brief Sections 2.2-2.4
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.formatStatus = formatStatus;
 exports.formatProgress = formatProgress;
@@ -16,8 +49,11 @@ exports.showActiveStatus = showActiveStatus;
 exports.showNoActiveWorkpackage = showNoActiveWorkpackage;
 exports.runStatusCLI = runStatusCLI;
 const util_1 = require("util");
+const path = __importStar(require("path"));
 const validation_1 = require("../../validation");
 const registry_1 = require("../registry");
+const slug_index_1 = require("../../knowledge/slug-index");
+const slug_resolver_1 = require("../../knowledge/slug-resolver");
 const state_machine_1 = require("../state-machine");
 // ==============================================================================
 // OUTPUT FORMATTING
@@ -41,9 +77,17 @@ function formatStatus(status) {
     return `${STATUS_ICONS[status]} ${status}`;
 }
 /**
- * Format progress percentage
+ * Format progress percentage. Input is 0-100 per the calculateProgress contract.
+ *
+ * Debug guardrail: when CLEAR_DEBUG_UNITS=1 is set in the environment, suspicious
+ * sub-1% nonzero values trigger a stderr warning. These are the signature of a
+ * residual 0-1 ratio leak from a writer that hasn't been updated to emit percent.
+ * Off by default so production never logs noise.
  */
 function formatProgress(progress) {
+    if (process.env.CLEAR_DEBUG_UNITS === '1' && progress > 0 && progress < 1) {
+        process.stderr.write(`[formatProgress] suspicious sub-1% value: ${progress} — may indicate ratio leak\n`);
+    }
     const pct = Math.round(progress);
     return `${pct}%`;
 }
@@ -89,6 +133,10 @@ function listWorkpackages(entries, options = {}, activeId) {
     for (const entry of filtered) {
         const isActive = entry.id === activeId || entry.systemId === activeId;
         const activeMarker = isActive ? ' ← active' : '';
+        // Single-fallback (entry.progress ?? 0) is intentional here: list/show/active
+        // displays read from registry only — no state.progress alternative to reconcile
+        // against. If entry.progress is 0 it's authoritative (or RC1D fossil drift, in
+        // which case the session-init backfill from P-RD will heal it).
         const progress = formatProgress(entry.progress ?? 0);
         const deps = entry.blocked_by?.length ?? 0;
         lines.push(`| ${entry.id.padEnd(5)} | ${entry.title.slice(0, 20).padEnd(20)} | ${entry.status.padEnd(11)} | ${progress.padStart(8)} | ${String(deps).padStart(4)} |${activeMarker}`);
@@ -121,7 +169,7 @@ function listWorkpackages(entries, options = {}, activeId) {
 /**
  * Show detailed workpackage information
  */
-function showWorkpackage(entry, full, deps, linkedKnowledge) {
+function showWorkpackage(entry, full, deps, linkedKnowledge, clearDir) {
     const lines = [];
     // Header
     lines.push(`📦 Workpackage: ${entry.id} - ${entry.title}`);
@@ -164,9 +212,21 @@ function showWorkpackage(entry, full, deps, linkedKnowledge) {
     // Deliverables section (if full entry available)
     if (full?.deliverables && full.deliverables.length > 0) {
         lines.push('## Deliverables');
+        // WP-DF2 AC4 (S166): read slug-index once when clearDir is provided so
+        // [[slug-name]] refs in deliverable descriptions resolve to entry IDs.
+        const slugIndex = clearDir ? (0, slug_index_1.readSlugIndex)(clearDir) : null;
         for (const d of full.deliverables) {
             const icon = d.status === 'complete' ? '✅' : '⬜';
-            lines.push(`  ${icon} ${d.id}: ${d.pattern}`);
+            // WP-DF2 AC2: WP YAMLs commonly author deliverables as plain strings;
+            // parser.ts wraps those as {pattern:'', description:<string>}. Object-shaped
+            // entries carry the glob in pattern + optional description. Render the
+            // human-readable surface preferred (description), fall back to pattern,
+            // then to a sentinel so the line never renders empty.
+            const rawText = d.description || d.pattern || '(no description)';
+            const text = clearDir
+                ? (0, slug_resolver_1.resolveSlugRefsWithLog)(rawText, slugIndex, clearDir, 'status-cli')
+                : rawText;
+            lines.push(`  ${icon} ${d.id}: ${text}`);
         }
         lines.push('');
     }
@@ -233,7 +293,7 @@ Use \`/cf-workpackage start <id>\` to activate one.`;
  */
 function parseStatusArgs() {
     const argv = process.argv.slice(2);
-    let clearDir = '.clear';
+    let clearDir = './.clear';
     const positionalArgs = [];
     for (const arg of argv) {
         if (arg.startsWith('--clear-dir=')) {
@@ -243,6 +303,14 @@ function parseStatusArgs() {
             positionalArgs.push(arg);
         }
     }
+    // Normalize --clear-dir via stripClearSuffix (NOT resolveClearDir) on the CLI
+    // entry path: this DELIBERATELY emits the bare-`.clear` conflation warning
+    // (caller: status-cli) that the conflation-warning regression detector relies on
+    // (status-cli-clear-suffix-argparse.test.ts). resolveClearDir is intentionally
+    // warning-free, so it is used only on the programmatic runStatusCLI entry
+    // (form-tolerance for direct callers). Both paths converge on `<root>/.clear`.
+    const basePath = (0, validation_1.stripClearSuffix)(clearDir, 'status-cli');
+    clearDir = path.join(basePath, '.clear');
     return {
         clearDir,
         subcommand: positionalArgs[0],
@@ -254,7 +322,7 @@ function parseStatusArgs() {
  */
 async function runStatusCLI(options) {
     const { subcommand, args = [] } = options;
-    const clearDir = (0, validation_1.validateBasePath)(options.clearDir);
+    const clearDir = (0, validation_1.resolveClearDir)((0, validation_1.validateBasePath)(options.clearDir)).clearSubdir;
     const registry = new registry_1.WorkpackageRegistryManager(clearDir);
     switch (subcommand) {
         case 'list': {
@@ -305,7 +373,7 @@ async function runStatusCLI(options) {
                     }
                 }
             }
-            return showWorkpackage(entry, full ?? undefined, deps, entry.linkedKnowledge);
+            return showWorkpackage(entry, full ?? undefined, deps, entry.linkedKnowledge, clearDir);
         }
         default: {
             // Default: show active workpackage
@@ -361,15 +429,33 @@ if (require.main === module) {
         const options = parseStatusArgs();
         runStatusCLI(options)
             .then(message => {
-            console.log(JSON.stringify({ success: true, message }));
+            // Dual-key envelope: `message` is canonical CLI shape; `additionalContext`
+            // mirrors it for any future hook-script invocation. Both carry identical text.
+            console.log(JSON.stringify({
+                success: true,
+                message,
+                additionalContext: message
+            }));
         })
             .catch(error => {
-            console.error(JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }));
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            console.error(JSON.stringify({
+                success: false,
+                message: errorMessage,
+                additionalContext: errorMessage,
+                error: errorMessage
+            }));
             process.exit(1);
         });
     }
     catch (error) {
-        console.error(JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }));
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        console.error(JSON.stringify({
+            success: false,
+            message: errorMessage,
+            additionalContext: errorMessage,
+            error: errorMessage
+        }));
         process.exit(1);
     }
 }

@@ -204,8 +204,6 @@ export interface SyncState {
     lastUpdated: string;
     /** ISO 8601 timestamp of last full sync */
     lastFullSync: string | null;
-    /** Number of prompts since last sync */
-    promptsSinceSync: number;
     /** Current session info */
     session: {
         id: string;
@@ -342,6 +340,22 @@ export interface InitializationResult {
     error?: string;
     /** Backup path if --force was used */
     backupPath?: string;
+    /**
+     * WP-PS1 AC8: user declined the destructiveness confirmation prompt.
+     * When true: no filesystem mutations occurred (no backup, no .clear/ removal).
+     * Distinct from `error` because this is a user-requested abort, not a failure.
+     * CLI layer maps this to exit code 0 with `status: 'cancelled'`.
+     *
+     * INVARIANT (CR fix-batch F-TS-2 + F-LINT-7 — cross-role-confirmed):
+     *   cancelled === true  IMPLIES  success === false
+     *   The reverse is NOT required (success can be false without cancelled — that's
+     *   a normal failure with `error` populated).
+     * Callers that branch on this MUST check `cancelled` BEFORE `!success` so a
+     * user-cancelled abort is not routed into the error code path. See
+     * src/infrastructure/init/cli/init-cli.ts:runInitCLI for the canonical
+     * branch order.
+     */
+    cancelled?: boolean;
 }
 /**
  * Initialization error codes
@@ -407,6 +421,12 @@ export interface InitOptions {
     clearVersion?: string;
     /** Command version */
     commandVersion?: string;
+    /**
+     * WP-PS1 AC9: when true, skip the destructiveness confirmation prompt.
+     * The destruction preview is STILL emitted to stderr for audit-trail
+     * visibility — only the [y/N] prompt is bypassed. Set by --yes on the CLI.
+     */
+    skipPrompt?: boolean;
 }
 /**
  * Generate a project ID

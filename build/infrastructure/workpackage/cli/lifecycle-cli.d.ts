@@ -55,12 +55,28 @@ export interface CompleteResult {
     validationIssues?: string[];
     planProgress?: number;
     unblockedWorkpackages?: string[];
+    /** Per-WP registry-walk parse failures (informational; non-fatal). */
+    corruptRegistryWarnings?: CorruptRegistryWarning[];
     message: string;
 }
 export interface DeleteResult {
     success: boolean;
     workpackage?: WorkpackageRegistryEntry;
+    /** Per-WP registry-walk parse failures (informational; non-fatal). */
+    corruptRegistryWarnings?: CorruptRegistryWarning[];
     message: string;
+}
+/**
+ * A single WP that could not be parsed during a registry walk.
+ *
+ * Emitted as informational warning at command exit so the user knows which
+ * WPs need repair via update-cli, but does NOT abort the lifecycle operation.
+ */
+export interface CorruptRegistryWarning {
+    /** Display ID of the affected WP (e.g., "P6.7"). */
+    displayId: string;
+    /** Underlying parser failure detail (e.g., "Invalid type: bug"). */
+    detail: string;
 }
 export interface BlockerInfo {
     id: string;
@@ -117,15 +133,18 @@ export declare function validateForCompletion(registry: WorkpackageRegistryManag
  */
 export declare function formatValidation(validation: CompletionValidation, workpackageId: string): string;
 /**
- * Complete the current active workpackage
+ * Complete a workpackage. The target is resolved by resolveCompleteTarget:
+ * an explicit id when provided, else the active workpackage, else the unique
+ * in_progress workpackage.
  *
  * @param registry - Workpackage registry manager
  * @param auditLogger - Audit logger instance
  * @param force - Skip validation
  * @param options - Additional options
+ * @param targetId - Optional explicit workpackage id (positional); when omitted, the active / unique-in_progress fallback applies
  * @returns Complete result
  */
-export declare function completeCommand(registry: WorkpackageRegistryManager, auditLogger: AuditLogger, force: boolean, options: LifecycleCLIOptions): Promise<CompleteResult>;
+export declare function completeCommand(registry: WorkpackageRegistryManager, auditLogger: AuditLogger, force: boolean, options: LifecycleCLIOptions, targetId?: string): Promise<CompleteResult>;
 /**
  * Delete (archive) a workpackage
  *

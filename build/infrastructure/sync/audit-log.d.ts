@@ -180,6 +180,39 @@ export declare class AuditLogger {
  */
 export declare function createAuditLogger(basePath: string, sessionId: string, sessionNumber: number, config?: Partial<AuditConfig>): AuditLogger;
 /**
+ * Resolve the current session identity for audit-emit contexts.
+ *
+ * Precedence:
+ *   1. Explicit overrides from caller (typically `--session-id` / `--session-number`
+ *      argv values parsed by a CLI entry point).
+ *   2. Canonical values read from `<clearDir>/state/session.json` (the
+ *      sync-state authority — populated by knowledge-capture.sh, session-init,
+ *      etc.).
+ *   3. Synthetic fallback `session-${Date.now()}` + sessionNumber 0 — used only
+ *      when no state file exists (e.g., first-ever invocation in a fresh
+ *      project, or unit-test fixtures without session state).
+ *
+ * Returns deterministic values for a given input — same `clearDir` + same
+ * `overrides` => same output across same-millisecond invocations.
+ *
+ * Use at CLI entry points that construct `AuditLogger` and currently default
+ * to `session-${Date.now()}`. The synthetic-only path corrupts audit-log
+ * correlation across the session because every entry gets a fresh timestamp
+ * suffix, breaking downstream cross-domain join queries.
+ *
+ * @param clearDir - .clear directory path (e.g., `.clear`)
+ * @param overrides - Optional explicit sessionId / sessionNumber from argv
+ *                    (caller's existing override takes precedence over the
+ *                    state file)
+ */
+export declare function getCurrentSession(clearDir: string, overrides?: {
+    sessionId?: string;
+    sessionNumber?: number;
+}): {
+    sessionId: string;
+    sessionNumber: number;
+};
+/**
  * Create a session start audit entry
  */
 export declare function createSessionStartEntry(sessionId: string, sessionNumber: number): Omit<AuditEntry, 'timestamp' | 'sessionId' | 'sessionNumber'>;

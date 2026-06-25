@@ -12,7 +12,21 @@ allowed-tools:
 
 # Reload CLEAR Context
 
-This skill forces a reload of all CLEAR domain context -- knowledge, workpackage, and plan -- into the current session. It re-triggers the session-start dispatcher without reinitializing the project, making it a lightweight way to refresh stale or incomplete context.
+This skill forces a reload of all CLEAR domain context into the current session. It re-triggers the SessionStart dispatcher (`scripts/dispatchers/session-start.sh`) with `source: clear`, refreshing session state + plan + workpackage + knowledge + sync state without reinitializing the project — see the `session-management` skill's "SessionStart Dispatcher Orchestration" section for the full fan-out.
+
+The user-relevant surfaces are knowledge, workpackage, and plan (what gets injected into Claude's context); session and sync state are reloaded as supporting infrastructure.
+
+## Plugin Root Resolution
+
+CLI commands in this skill reference `$CLEAR_PLUGIN_ROOT` — a `.claude/settings.json` env var the shell expands. The SessionStart hook persists it, but settings env vars load at session **launch**, so on a brand-new consumer's **first session** (before its next restart) the variable is empty and `node "$CLEAR_PLUGIN_ROOT/build/..."` fails with `MODULE_NOT_FOUND`.
+
+**First-session bootstrap** — if `$CLEAR_PLUGIN_ROOT` is empty, set it inline in the *same* Bash call as the CLI (each Bash call is a fresh shell, so a separate `export` would not carry over):
+
+```bash
+export CLEAR_PLUGIN_ROOT="${CLEAR_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+```
+
+Prepend it to the CLI in one shell line: `export CLEAR_PLUGIN_ROOT="${CLEAR_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}"; <node "$CLEAR_PLUGIN_ROOT/build/..." command>`. `${CLAUDE_PLUGIN_ROOT}` resolves in this SKILL.md body to the actually-loaded plugin path; once the consumer restarts, `$CLEAR_PLUGIN_ROOT` is populated and the assignment is a harmless no-op.
 
 ---
 

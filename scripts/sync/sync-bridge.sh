@@ -8,6 +8,7 @@
 #
 # Operations (R3.1 baseline):
 #   update-workpackage  Update WP summary in sync-state
+#   update-session      Update session summary in sync-state
 #   update-knowledge    Update knowledge summary after capture
 #   persist             Flush sync-state to disk
 #   load                Load and output sync-state as JSON

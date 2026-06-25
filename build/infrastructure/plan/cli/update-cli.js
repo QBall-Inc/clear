@@ -41,15 +41,32 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.updateActivePhase = updateActivePhase;
 exports.updateMilestone = updateMilestone;
+exports.updateMilestoneRequires = updateMilestoneRequires;
 exports.runUpdateCLI = runUpdateCLI;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const yaml = __importStar(require("js-yaml"));
 const registry_1 = require("../registry");
 const parse_args_1 = require("../../cli/parse-args");
+const validation_1 = require("../../validation");
 const plan_rollup_1 = require("../../sync/plan-rollup");
 const types_1 = require("../types");
 const writer_1 = require("../writer");
+const audit_log_1 = require("../../sync/audit-log");
+/**
+ * Apply the dual-key envelope to a result before serialization.
+ * Sets `success` from `status === 'success'`, and mirrors
+ * `additionalContext` (or `error` as fallback) into `message`.
+ */
+function withEnvelope(result) {
+    const text = result.additionalContext ?? result.error ?? '';
+    return {
+        ...result,
+        success: result.status === 'success',
+        message: text,
+        additionalContext: text,
+    };
+}
 // ==============================================================================
 // OPERATIONS
 // ==============================================================================
@@ -94,12 +111,23 @@ function updateActivePhase(registry, phaseId, cwd) {
     };
 }
 /**
- * Mark a milestone as complete in plan.json and master-plan.yaml
- *
- * K0.1 finding: same two-store divergence as POST-31.
- * markMilestoneComplete() writes JSON only — this function adds YAML write-back.
+ * Statuses a milestone can be SET to via tooling (reversibility). `at_risk` is a
+ * derived risk signal that is never hand-set; this narrows `string` to the
+ * settable subset of MilestoneStatus.
  */
-function updateMilestone(registry, milestoneId, status, cwd) {
+function isSettableMilestoneStatus(status) {
+    return status === 'complete' || status === 'in_progress' || status === 'not_started';
+}
+/**
+ * Set a milestone's status in plan.json and master-plan.yaml.
+ *
+ * Accepts complete / in_progress / not_started (reversibility — a milestone
+ * declared complete can be walked back). The lockstep two-surface write, and
+ * clearing completedAt on any non-complete status, is owned by
+ * registry.setMilestoneStatus, so this function no longer does its own YAML
+ * write-back (the prior two-store divergence is closed at the writer).
+ */
+function updateMilestone(registry, milestoneId, status) {
     const plan = registry.loadPlan();
     if (!plan) {
         return { status: 'no_plan', error: 'No master plan found' };
@@ -113,27 +141,126 @@ function updateMilestone(registry, milestoneId, status, cwd) {
             additionalContext: `Milestone "${milestoneId}" not found. Available milestones:\n${available}`
         };
     }
-    if (status !== 'complete') {
+    // Reversibility: a milestone can be set complete, walked back to in_progress,
+    // or reset to not_started. `at_risk` is a derived risk signal, not a
+    // hand-settable status, so it is rejected here. The type-guard narrows
+    // `status` to MilestoneStatus, so the writer call needs no cast.
+    if (!isSettableMilestoneStatus(status)) {
         return {
             status: 'error',
-            error: `Unsupported milestone status: ${status}. Only "complete" is supported.`
+            error: `Unsupported milestone status: ${status}. Supported: complete, in_progress, not_started.`
         };
     }
-    registry.markMilestoneComplete(milestoneId);
-    // YAML write-back (K0.1 finding — R5.5b pattern, fire-and-log)
-    const planMilestone = plan.milestones.find(m => m.id === milestoneId);
-    if (planMilestone) {
-        planMilestone.status = 'complete';
-        const writeResult = (0, writer_1.writeMasterPlan)(cwd, plan);
-        if (writeResult.status === 'error') {
-            process.stderr.write(`[update-cli] milestone YAML write-back failed: ${writeResult.error}\n`);
-        }
-    }
+    // setMilestoneStatus writes plan.json AND master-plan.yaml in lockstep and
+    // clears completedAt for any non-complete status, so the prior separate YAML
+    // write-back is subsumed (no surface divergence, no residual completedAt).
+    registry.setMilestoneStatus(milestoneId, status);
     return {
         status: 'success',
         action: 'update-milestone',
         details: { milestoneId, status, milestoneName: milestone.name },
-        additionalContext: `Milestone marked complete: ${milestoneId} (${milestone.name})`
+        additionalContext: `Milestone status set to ${status}: ${milestoneId} (${milestone.name})`
+    };
+}
+/**
+ * Edit a milestone's `requires` list (AC16-AC18, AC23-AC24, AC27).
+ *
+ * Parses comma-separated IDs from --requires=<list>, de-duplicates,
+ * validates each ID exists in plan.phases[].workpackages OR plan.milestones,
+ * replaces milestone.requires entirely, writes back to master-plan.yaml.
+ *
+ * Audit action: 'edit-requires' (distinguishes from 'update-milestone' status-complete).
+ *
+ * Empty list rejected (AC23) — clearing requires would orphan the milestone's
+ * completion gating, so it requires an explicit future flag.
+ */
+function updateMilestoneRequires(registry, milestoneId, requiresRaw, cwd, auditLogger) {
+    const plan = registry.loadPlan();
+    if (!plan) {
+        return { status: 'no_plan', error: 'No master plan found' };
+    }
+    // Parse comma-list — trim each token, drop empties, then de-dup (AC24).
+    const rawTokens = requiresRaw.split(',').map(s => s.trim()).filter(s => s.length > 0);
+    if (rawTokens.length === 0) {
+        return {
+            status: 'error',
+            error: '[CLEAR] --requires requires at least one ID, or use --status=complete for status-only updates.'
+        };
+    }
+    // De-dup preserving first occurrence (AC24).
+    const seen = new Set();
+    const requiresList = [];
+    let dedupedCount = 0;
+    for (const token of rawTokens) {
+        if (seen.has(token)) {
+            dedupedCount++;
+            continue;
+        }
+        seen.add(token);
+        requiresList.push(token);
+    }
+    const planMilestone = plan.milestones.find(m => m.id === milestoneId);
+    if (!planMilestone) {
+        const available = plan.milestones.map(m => `  - ${m.id}: ${m.name}`).join('\n');
+        return {
+            status: 'error',
+            error: `Milestone not found: ${milestoneId}`,
+            additionalContext: `Milestone "${milestoneId}" not found. Available milestones:\n${available}`
+        };
+    }
+    // Build set of valid reference IDs: all WP IDs across all phases + all milestone IDs.
+    const validWpIds = new Set(plan.phases.flatMap(p => p.workpackages));
+    const validMilestoneIds = new Set(plan.milestones.map(m => m.id));
+    const invalidIds = requiresList.filter(id => !validWpIds.has(id) && !validMilestoneIds.has(id));
+    if (invalidIds.length > 0) {
+        const availableWps = [...validWpIds].sort().map(id => `  - ${id}`).join('\n');
+        const availableMilestones = [...validMilestoneIds].sort().map(id => `  - ${id}`).join('\n');
+        return {
+            status: 'error',
+            error: `Invalid --requires ID(s): ${invalidIds.join(', ')}`,
+            additionalContext: `[CLEAR] --requires references unknown ID(s): ${invalidIds.join(', ')}.\n\n` +
+                `Available workpackage IDs:\n${availableWps || '  (none)'}\n\n` +
+                `Available milestone IDs:\n${availableMilestones || '  (none)'}`
+        };
+    }
+    const oldRequires = [...planMilestone.requires];
+    planMilestone.requires = requiresList;
+    const writeResult = (0, writer_1.writeMasterPlan)(cwd, plan);
+    if (writeResult.status === 'error') {
+        return {
+            status: 'error',
+            error: `master-plan.yaml write failed: ${writeResult.error ?? 'unknown write error'}`
+        };
+    }
+    // Canonical AuditAction is broad-category ('update'); specific operation distinction
+    // (per AC16) lives in metadata.operation. Mirrors S180 phase-cli pattern at
+    // phase-cli.ts:549-557 (action: 'create' + metadata.operation: 'add').
+    auditLogger?.log({
+        domain: 'plan',
+        action: 'update',
+        trigger: 'user_prompt',
+        target: planMilestone.id,
+        targetDisplayId: planMilestone.id,
+        oldValue: oldRequires,
+        newValue: requiresList,
+        metadata: {
+            surface: 'milestone',
+            operation: 'edit-requires',
+            dedupedCount
+        }
+    });
+    const dedupNote = dedupedCount > 0 ? ` (deduplicated ${dedupedCount} repeat ID${dedupedCount === 1 ? '' : 's'})` : '';
+    return {
+        status: 'success',
+        action: 'edit-requires',
+        details: {
+            milestoneId,
+            milestoneName: planMilestone.name,
+            oldRequires,
+            newRequires: requiresList,
+            dedupedCount
+        },
+        additionalContext: `Milestone ${milestoneId} requires updated: [${requiresList.join(', ')}]${dedupNote}`
     };
 }
 /**
@@ -202,9 +329,9 @@ async function triggerRollup(options) {
         return { status: 'error', error: result.error };
     }
     const phaseEntries = Object.entries(result.phaseProgress)
-        .map(([id, p]) => `  ${id}: ${Math.round(p * 100)}%`)
+        .map(([id, p]) => `  ${id}: ${p}%`)
         .join('\n');
-    let message = `Plan rollup complete. Overall: ${Math.round(result.overallProgress * 100)}%\n${phaseEntries}`;
+    let message = `Plan rollup complete. Overall: ${result.overallProgress}%\n${phaseEntries}`;
     if (result.celebrationMessage) {
         message += `\n${result.celebrationMessage}`;
     }
@@ -226,14 +353,19 @@ async function triggerRollup(options) {
  * Run the update CLI
  */
 async function runUpdateCLI(options) {
-    const clearDir = options.clearDir || `${options.cwd}/.clear`;
+    const clearDir = (0, validation_1.resolveClearDir)(options.clearDir || `${options.cwd}/.clear`).clearSubdir;
     const registry = new registry_1.PlanRegistryManager(clearDir);
     if (options.activePhase) {
         return updateActivePhase(registry, options.activePhase, options.cwd);
     }
     if (options.milestone) {
+        // --requires takes precedence over --status (edit-requires is more specific).
+        if (options.milestoneRequires !== undefined) {
+            const auditLogger = (0, audit_log_1.createAuditLogger)(options.cwd, options.sessionId, options.sessionNumber);
+            return updateMilestoneRequires(registry, options.milestone, options.milestoneRequires, options.cwd, auditLogger);
+        }
         const status = options.milestoneStatus ?? 'complete';
-        return updateMilestone(registry, options.milestone, status, options.cwd);
+        return updateMilestone(registry, options.milestone, status);
     }
     if (options.rollup) {
         return triggerRollup(options);
@@ -243,7 +375,7 @@ async function runUpdateCLI(options) {
     }
     return {
         status: 'error',
-        error: 'No action specified. Use --active-phase=<id>, --milestone=<id> --status=complete, --rollup, or --changelog --changelog-type=<type>.'
+        error: 'No action specified. Use --active-phase=<id>, --milestone=<id> --status=complete, --milestone=<id> --requires=<csv>, --rollup, or --changelog --changelog-type=<type>.'
     };
 }
 // ==============================================================================
@@ -262,6 +394,7 @@ function parseArgs() {
         { prefix: '--active-phase=', apply: (v, o) => { o.activePhase = v; } },
         { prefix: '--milestone=', apply: (v, o) => { o.milestone = v; } },
         { prefix: '--status=', apply: (v, o) => { o.milestoneStatus = v; } },
+        { prefix: '--requires=', apply: (v, o) => { o.milestoneRequires = v; } },
         { prefix: '--session-id=', apply: (v, o) => { o.sessionId = v; } },
         { prefix: '--session-number=', apply: (v, o) => { o.sessionNumber = parseInt(v, 10) || 0; } },
         { flag: '--rollup', apply: (_v, o) => { o.rollup = true; } },
@@ -282,13 +415,16 @@ if (require.main === module) {
                 '',
                 'Actions (at least one required):',
                 '  --active-phase=<phase-id>    Set the active phase',
-                '  --milestone=<id>             Update a milestone (requires --status)',
+                '  --milestone=<id>             Update a milestone (requires --status OR --requires)',
                 '  --rollup                     Recalculate plan progress from WP states',
                 '  --changelog                  Add a changelog entry',
                 '',
                 'Options:',
                 '  --cwd=<path>                 Project root directory (default: .)',
-                '  --status=<status>            Milestone status (with --milestone)',
+                '  --status=<status>            Milestone status (with --milestone, accepts: complete)',
+                '  --requires=<csv>             Replace milestone.requires list with comma-separated IDs (WP or milestone IDs).',
+                '                               Duplicates are silently removed. Empty list is rejected.',
+                '                               Takes precedence over --status when both are present.',
                 '  --session-id=<id>            Current session identifier',
                 '  --session-number=<number>    Current session number',
                 '  --changelog-type=<type>      Changelog entry type',
@@ -302,10 +438,15 @@ if (require.main === module) {
     const input = parseArgs();
     runUpdateCLI(input)
         .then(result => {
-        console.log(JSON.stringify(result));
+        console.log(JSON.stringify(withEnvelope(result)));
     })
         .catch(error => {
-        console.error(JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }));
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        console.error(JSON.stringify(withEnvelope({
+            status: 'error',
+            error: errorMessage,
+            additionalContext: errorMessage,
+        })));
         process.exit(1);
     });
 }

@@ -14,7 +14,7 @@ Rebuild the knowledge base search index.
 ## Execution
 
 ```bash
-node "$CLEAR_PLUGIN_ROOT/build/infrastructure/knowledge/cli/index-cli.js" --clear-dir=.clear
+node "$CLEAR_PLUGIN_ROOT/build/infrastructure/knowledge/cli/index-cli.js" --clear-dir=./.clear
 ```
 
 Append `--mode=full` for full rebuild, or `--force` to bypass threshold checks.

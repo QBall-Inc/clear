@@ -10,7 +10,12 @@ import { WorkpackageRegistryEntry, WorkpackageStatus, WorkpackageEntry } from '.
  */
 export declare function formatStatus(status: WorkpackageStatus): string;
 /**
- * Format progress percentage
+ * Format progress percentage. Input is 0-100 per the calculateProgress contract.
+ *
+ * Debug guardrail: when CLEAR_DEBUG_UNITS=1 is set in the environment, suspicious
+ * sub-1% nonzero values trigger a stderr warning. These are the signature of a
+ * residual 0-1 ratio leak from a writer that hasn't been updated to emit percent.
+ * Off by default so production never logs noise.
  */
 export declare function formatProgress(progress: number): string;
 /**
@@ -37,7 +42,7 @@ export declare function showWorkpackage(entry: WorkpackageRegistryEntry, full?: 
     id: string;
     status: WorkpackageStatus;
     progress?: number;
-}>, linkedKnowledge?: string[]): string;
+}>, linkedKnowledge?: string[], clearDir?: string): string;
 /**
  * Show active workpackage summary (default command)
  */

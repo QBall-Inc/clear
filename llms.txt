@@ -1,0 +1,49 @@
+# CLEAR
+
+> CLEAR (Context Layering & Engineering for Agentic Resources) is a Claude Code
+> plugin that pairs a living, filesystem-based, code-bound knowledge graph — the
+> CLEAR Knowledge Spec (CKS) — with a structured plan → schedule → act → manage
+> workflow, so coding agents get the right context at the right time and stay
+> on-track across sessions.
+
+CLEAR builds a markdown knowledge base (not a graph database) of typed, cross-linked
+concepts bound to the code they describe, and keeps it fresh through a lifecycle
+(supersession, deprecation, pruning) driven by the development workflow. Knowledge is
+plain markdown files in your repo; an index is only a derived cache. CLEAR publishes
+to npm as `@qball-inc/clear` and is licensed Apache-2.0.
+
+## Start here
+
+- [README](README.md): What CLEAR is, the CKS / OKF positioning, install, and the workflow at a glance.
+- [Getting started](docs/guides/getting-started.md): Install, initialize with `/cf-init`, and your first plan → schedule → act → manage loop.
+
+## Guides
+
+- [How CLEAR works](docs/guides/how-it-works.md): The two pillars (knowledge graph + structured workflow), the loop that drives them, and the shared context layer.
+- [The knowledge system](docs/guides/knowledge-system.md): CKS in depth — the seven knowledge types, the lifecycle, the consumption pattern, and the full CKS-vs-OKF comparison.
+- [Plan management](docs/guides/plan-management.md): Plans and phases; creating from scratch vs importing; tracking progress across sessions.
+- [Workpackage management](docs/guides/workpackage-management.md): Units of work; the lifecycle; progress accounting; dependencies.
+- [Session management](docs/guides/session-management.md): Sessions, handoffs, and continuity across sessions.
+
+## Architecture & specification
+
+- [Architecture](docs/architecture.md): The layered stack, the shared context layer, the single-writer state model, and the portable-core/adapter boundary.
+- [CKS.md](CKS.md): The formal CLEAR Knowledge Spec — concept format, the seven types, frontmatter schema, status lifecycle, supersession/deprecation, schema versioning, and conformance.
+
+## Command reference
+
+- [/cf-init](docs/reference/cf-init.md): Initialize CLEAR in a project.
+- [/cf-plan](docs/reference/cf-plan.md): Create or import a plan.
+- [/cf-workpackage](docs/reference/cf-workpackage.md): Define and track units of work.
+- [/cf-knowledge](docs/reference/cf-knowledge.md): Capture and manage knowledge.
+- [/cf-status](docs/reference/cf-status.md): Show the current project state.
+- [/cf-handoff](docs/reference/cf-handoff.md): Write a session handoff.
+- [/cf-reload](docs/reference/cf-reload.md): Reload CLEAR state in-session.
+- [/cf-debug](docs/reference/cf-debug.md): Diagnose and repair CLEAR state.
+- [/cf-help](docs/reference/cf-help.md): Command help and guidance.
+
+## Reference
+
+- [CONTRIBUTING](CONTRIBUTING.md): How to contribute design, harness ports, and docs; how the public mirror works.
+- [CHANGELOG](CHANGELOG.md): Release history, including the reconstructed pre-1.0 development timeline.
+- [LICENSE](LICENSE): Apache License 2.0.

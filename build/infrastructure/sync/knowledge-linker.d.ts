@@ -115,6 +115,29 @@ export interface KnowledgeLinkSummary {
     entryType?: string;
 }
 /**
+ * Build an active (non-deprecated) {@link KnowledgeLink} for the sync-state
+ * projection. Single source of the link shape so the constant fields
+ * (`status: 'active'`, `deprecation_type: null`) and field ordering live in one
+ * place instead of being re-spelled at every write surface. Callers resolve the
+ * systemId refs themselves and pass them in (`phaseId` is a required systemId
+ * string — `''` when none resolved, matching the sync-state default).
+ *
+ * @param params.id - Knowledge entry ID (e.g. "TD-025")
+ * @param params.workpackageId - Workpackage systemId
+ * @param params.phaseId - Phase systemId ('' when none)
+ * @param params.title - Knowledge entry title
+ * @param params.linkedAt - ISO timestamp (defaults to now)
+ * @param params.linkedBy - Link source ('auto' | 'manual' | session id; default 'auto')
+ */
+export declare function buildSyncKnowledgeLink(params: {
+    id: string;
+    workpackageId: string;
+    phaseId: string;
+    title: string;
+    linkedAt?: string;
+    linkedBy?: string;
+}): KnowledgeLink;
+/**
  * Link a knowledge entry to a workpackage.
  *
  * Uses systemId for stability - links survive plan restructuring.
@@ -123,6 +146,53 @@ export interface KnowledgeLinkSummary {
  * @returns Link result
  */
 export declare function linkKnowledge(input: LinkKnowledgeInput): Promise<LinkKnowledgeResult>;
+/**
+ * Intrinsically propagate a knowledge CREATE/UPDATE to sync-state.
+ *
+ * The shared writer that makes the entrypoint (skill / hook / raw Bash) irrelevant
+ * to correctness: a mutating CLI calls this directly so its own execution leaves
+ * `sync-state.knowledge.recentEntries` coherent, instead of relying on the
+ * UserPromptSubmit hook to catch up on the NEXT prompt.
+ *
+ * Synchronous load -> mutate -> save in one tick (never holds the manager across
+ * an await). Idempotent: addRecentKnowledgeEntry dedups by id, so co-running with
+ * the hook path yields a single coherent projection. Schema-normalize happens
+ * inside SyncStateManager.load(), so this is safe on schema-divergent consumer
+ * state. Throws nothing the caller must handle — the existing mutators and save()
+ * own their error surfaces; callers fire this as a side effect.
+ *
+ * @param basePath - Project root directory
+ * @param knowledgeId - Knowledge entry ID just created/updated (e.g. "TD-025")
+ */
+export declare function propagateKnowledgeCapture(basePath: string, knowledgeId: string): void;
+/**
+ * Intrinsically propagate a knowledge->workpackage LINK to sync-state.
+ *
+ * Narrow companion to {@link propagateKnowledgeCapture} for the link surface: the
+ * caller (link-cli) keeps owning the DB + markdown frontmatter + WP-YAML surfaces
+ * and calls this last to add ONLY the sync-state projection. Lower blast radius
+ * than delegating the whole flow to {@link linkKnowledge}.
+ *
+ * Synchronous load -> mutate -> save; idempotent (addKnowledgeLink dedups by
+ * link.id). Schema-normalize in load() makes `state.links` safe even when the
+ * consumer state had no `links` key (the divergent-shape crash site).
+ *
+ * Precondition (TS-005): the floor must NOT record a semantically-invalid link.
+ * SyncStateManager.validate() rejects any link whose workpackage/phase refs are
+ * not systemIds (`wp-…` / `ph-…`), so a `""` or display-ID phaseId would surface
+ * as state corruption to the SS detection layer (debug-cli drift check +
+ * reconcile). When the link's own phase ref is absent or non-systemId, resolve
+ * it from the active phase (mirrors {@link linkKnowledge}'s
+ * `?? activePhaseSystemId` precedent); if a valid `wp-`/`ph-` pair still can't be
+ * formed, no-op rather than inject an invalid link — the caller keeps its other
+ * surfaces (DB + .md + WP-YAML).
+ *
+ * @param basePath - Project root directory
+ * @param workpackageSystemId - Target workpackage systemId
+ * @param link - The KnowledgeLink to record
+ * @returns true if the link was propagated, false if skipped as invalid
+ */
+export declare function propagateKnowledgeLink(basePath: string, workpackageSystemId: string, link: KnowledgeLink): boolean;
 /**
  * Remove link between knowledge entry and workpackage.
  *

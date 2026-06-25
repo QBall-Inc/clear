@@ -19,6 +19,7 @@
  * - persist:            Save current sync-state to disk (flush dirty state)
  * - load:               Load sync-state from disk, output as JSON
  * - reconcile:          Detect and correct stale knowledge links at session start
+ * - reconcile-knowledge: Rebuild the denormalized knowledge cache from source-of-truth (recovery)
  * - reconcile-plan:     Detect and correct plan/WP state drift at session start
  *
  * Usage: node sync-bridge-cli.js --clear-dir=<path> --op=<operation> [--data=<json>]

@@ -11,7 +11,7 @@ Display full details for a single knowledge entry.
 ## Execution
 
 ```bash
-node "$CLEAR_PLUGIN_ROOT/build/infrastructure/knowledge/cli/show-cli.js" --id="$ID" --clear-dir=.clear
+node "$CLEAR_PLUGIN_ROOT/build/infrastructure/knowledge/cli/show-cli.js" --id="$ID" --clear-dir=./.clear
 ```
 
 ## Output Includes

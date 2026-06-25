@@ -13,6 +13,15 @@ source "$(cd "$(dirname "$0")" && pwd)/../lib/common.sh"
 # Read input
 INPUT=$(cat)
 
+# Extract CWD (canonicalized for symlink-resolution consistency with the other
+# dispatchers per WP-CI1 cross-role review finding).
+CWD=$(canonicalize_cwd "$(echo "$INPUT" | jq -r '.cwd // "."')")
+
+# WP-CI1: skip on uninitialized projects. Placed BEFORE kill switches to match
+# the uniform guard-first ordering of the other 5 dispatchers (per WP-CI1
+# review STD-02 + ARCH-01 — the original order had kill switches first).
+require_clear_initialized "$CWD" || { echo '{}'; exit 0; }
+
 # --- Kill switches (global + per-hook) ---
 if [ "${CLEAR_HOOKS_ENABLED:-1}" = "0" ]; then
   echo '{}'
@@ -24,27 +33,16 @@ if [ "${CLEAR_SESSIONEND_ENABLED:-1}" = "0" ]; then
 fi
 
 # Redirect logs to project directory
-CWD=$(echo "$INPUT" | jq -r '.cwd // "."')
 use_project_logs "$CWD"
 
 # Delegate to session-finalize (capture output for logging, don't pollute stdout)
-FINALIZE_STATUS="skipped"
 SCRIPT="${SCRIPTS_DIR}/session/session-finalize.sh"
 if [ -x "$SCRIPT" ]; then
   FINALIZE_RESULT=$(echo "$INPUT" | "$SCRIPT" 2>>"$HOOK_ERROR_LOG" || echo '{"status":"error"}')
   FINALIZE_STATUS=$(echo "$FINALIZE_RESULT" | jq -r '.status // "unknown"' 2>/dev/null || echo "unknown")
   echo "[$(date -Iseconds)] SessionEnd finalize: $FINALIZE_STATUS" >> "${LOG_DIR}/hooks.log"
 else
-  FINALIZE_STATUS="not-executable"
-  echo "[$(date -Iseconds)] SessionEnd: session-finalize.sh not executable" >> "${LOG_DIR}/hooks.log"
+  echo "[$(date -Iseconds)] SessionEnd finalize: not-executable (session-finalize.sh missing or not +x)" >> "${LOG_DIR}/hooks.log"
 fi
-
-# --- Smoke test banner (R2 B1 gate) ---
-# Output visible text to stdout — Claude Code captures this as additionalContext.
-# This proves the SessionEnd → additionalContext injection mechanism works.
-echo "═══════════════════════════════════════════════════════════════"
-echo "  CLEAR SESSION END - HOOK ACTIVE"
-echo "  Finalization status: ${FINALIZE_STATUS}"
-echo "═══════════════════════════════════════════════════════════════"
 
 exit 0

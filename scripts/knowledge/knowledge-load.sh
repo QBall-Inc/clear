@@ -67,38 +67,50 @@ else
   exit 0
 fi
 
-# Build CLI arguments
-CLI_ARGS="--clear-dir=${CLEAR_DIR}"
+# Build CLI arguments as a bash array. CROSS-K3.4-01 (S155): array form prevents
+# shell word-split on values from jq -r output (workpackage / context_tags /
+# level / session may contain whitespace or shell metacharacters); the prior
+# concatenated-string form expanded unquoted into the CLI invocation.
+CLI_ARGS_ARR=("--clear-dir=${CLEAR_DIR}")
 
 if [ -n "$LEVEL" ]; then
-  CLI_ARGS="${CLI_ARGS} --level=${LEVEL}"
+  CLI_ARGS_ARR+=("--level=${LEVEL}")
 fi
 
 if [ -n "$CONTEXT_TAGS" ]; then
-  CLI_ARGS="${CLI_ARGS} --context=${CONTEXT_TAGS}"
+  CLI_ARGS_ARR+=("--context=${CONTEXT_TAGS}")
 fi
 
 if [ -n "$WORKPACKAGE" ]; then
-  CLI_ARGS="${CLI_ARGS} --workpackage=${WORKPACKAGE}"
+  CLI_ARGS_ARR+=("--workpackage=${WORKPACKAGE}")
+fi
+
+# Read current session number from session state for grace period boost
+SESSION_FILE="${CLEAR_DIR}/state/session.json"
+if [ -f "$SESSION_FILE" ]; then
+  SESSION_NUM=$(jq -r '.clearSessionNumber // ""' "$SESSION_FILE" 2>/dev/null)
+  if [ -n "$SESSION_NUM" ] && [ "$SESSION_NUM" != "null" ]; then
+    CLI_ARGS_ARR+=("--session=${SESSION_NUM}")
+  fi
 fi
 
 # Run the CLI tool
 cd "$PROJECT_ROOT" || exit
 if [ "$USE_NODE" = true ]; then
-  RESULT=$(node "$CLI_TOOL" $CLI_ARGS 2>&1)
+  CLI_OUTPUT=$(node "$CLI_TOOL" "${CLI_ARGS_ARR[@]}" 2>&1)
 else
-  RESULT=$(npx ts-node "$CLI_TOOL" $CLI_ARGS 2>&1)
+  CLI_OUTPUT=$(npx ts-node "$CLI_TOOL" "${CLI_ARGS_ARR[@]}" 2>&1)
 fi
 
 # Check if result is valid JSON
-if echo "$RESULT" | jq . >/dev/null 2>&1; then
+if echo "$CLI_OUTPUT" | jq . >/dev/null 2>&1; then
   # Add script metadata to result
-  echo "$RESULT" | jq --arg script "$SCRIPT_NAME" '. + {script: $script}'
+  echo "$CLI_OUTPUT" | jq --arg script "$SCRIPT_NAME" '. + {script: $script}'
 else
   # Return error with raw output
   jq -n \
     --arg script "$SCRIPT_NAME" \
-    --arg error "$RESULT" \
+    --arg error "$CLI_OUTPUT" \
     '{
       "success": false,
       "script": $script,
@@ -113,6 +125,22 @@ if [ -f "$FILE_INDEX_JS" ]; then
   node "$FILE_INDEX_JS" --clear-dir="${CLEAR_DIR}" --rebuild >/dev/null 2>&1 || true
 elif [ -f "$FILE_INDEX_TS" ]; then
   npx ts-node "$FILE_INDEX_TS" --clear-dir="${CLEAR_DIR}" --rebuild >/dev/null 2>&1 || true
+fi
+
+# K3.4 (S154) FR22: rebuild owner-index ONLY if it already exists (lazy
+# invariant preserved). First-build of owner-index happens at first SH entry
+# create in capture-cli.ts; session-start refresh keeps it consistent with
+# any out-of-band entry edits or filesystem changes between sessions. If
+# absent, do nothing — pre-tool.sh falls back to single-index logic.
+OWNER_INDEX_FILE="${CLEAR_DIR}/state/owner-index.json"
+if [ -f "$OWNER_INDEX_FILE" ]; then
+  FILE_INDEX_CLI_JS="${PROJECT_ROOT}/build/infrastructure/knowledge/cli/file-index-cli.js"
+  FILE_INDEX_CLI_TS="${PROJECT_ROOT}/src/infrastructure/knowledge/cli/file-index-cli.ts"
+  if [ -f "$FILE_INDEX_CLI_JS" ]; then
+    node "$FILE_INDEX_CLI_JS" --clear-dir="${CLEAR_DIR}" --rebuild-owner-index >/dev/null 2>&1 || true
+  elif [ -f "$FILE_INDEX_CLI_TS" ]; then
+    npx ts-node "$FILE_INDEX_CLI_TS" --clear-dir="${CLEAR_DIR}" --rebuild-owner-index >/dev/null 2>&1 || true
+  fi
 fi
 
 # Drain pending SQLite index rebuild (POST-32: session-start index recovery)

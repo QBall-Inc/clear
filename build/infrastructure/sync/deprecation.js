@@ -51,15 +51,18 @@ exports.deprecateOnDefer = deprecateOnDefer;
 exports.supersedeKnowledge = supersedeKnowledge;
 exports.resolveSupersessionChain = resolveSupersessionChain;
 exports.getDeprecationWarnings = getDeprecationWarnings;
+exports.isOrphanDeprecation = isOrphanDeprecation;
 exports.clearDeprecationWarning = clearDeprecationWarning;
 exports.createDeprecationHandler = createDeprecationHandler;
 exports.hasDeprecationWarnings = hasDeprecationWarnings;
 exports.getDeprecatedCount = getDeprecatedCount;
 exports.performSupersession = performSupersession;
+const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const types_1 = require("./types");
 const context_hub_1 = require("./context-hub");
 const audit_log_1 = require("./audit-log");
+const pending_reviews_1 = require("../knowledge/pending-reviews");
 const knowledge_linker_1 = require("./knowledge-linker");
 const db_1 = require("../knowledge/db");
 const parser_1 = require("../knowledge/parser");
@@ -392,10 +395,78 @@ function getDeprecationWarnings(basePath) {
                 });
             }
         }
-        return warnings;
+        // K2.7 DB-backed filter (defense-in-depth): drop entries the user has
+        // already resolved via supersession or explicit dismissal. Supersession IS
+        // the review action — once an entry is superseded, it no longer needs to
+        // surface as a deprecation warning anywhere in the system.
+        //
+        // Filters applied:
+        //   (b) superseded_by set in DB — eager drain should have caught this, but
+        //       this is defense-in-depth for sync-state that got out of sync
+        //   (c) supersession_reviewed = true in DB — user has acknowledged via `dismiss`
+        //
+        // Fail-open: if DB is unavailable, pass warnings through unfiltered so the
+        // user still sees something rather than silently losing warnings.
+        const clearDir = path.join(basePath, '.clear');
+        const db = new db_1.KnowledgeDatabase(clearDir);
+        const dbOk = db.initialize();
+        try {
+            if (!dbOk)
+                return warnings;
+            const filtered = [];
+            for (const warning of warnings) {
+                const entry = db.getEntry(warning.knowledgeId);
+                if (entry) {
+                    if (entry.supersession_reviewed)
+                        continue;
+                    if (entry.superseded_by)
+                        continue;
+                }
+                filtered.push(warning);
+            }
+            return filtered;
+        }
+        finally {
+            if (dbOk)
+                db.close();
+        }
     }
     catch {
         return [];
+    }
+}
+/**
+ * Check whether a knowledge entry is "orphan" from the perspective of the
+ * session-start deprecation banner:
+ *   - its markdown file is missing, OR
+ *   - related_files is non-empty AND none of the referenced files exist on disk.
+ *
+ * Entries with no related_files array are NOT considered orphan (we can't judge
+ * from missing metadata alone — keep the warning so the user can decide).
+ *
+ * @param basePath - Project root directory
+ * @param id - Knowledge entry ID (e.g., "TD-001")
+ */
+function isOrphanDeprecation(basePath, id) {
+    const entryFile = path.join(basePath, '.clear', 'knowledge', 'entries', `${id}.md`);
+    if (!fs.existsSync(entryFile))
+        return true;
+    try {
+        const content = fs.readFileSync(entryFile, 'utf-8');
+        const parsed = (0, parser_1.parseFrontmatter)(content);
+        if (!parsed)
+            return false;
+        const relatedFiles = parsed.frontmatter.related_files;
+        if (!relatedFiles || relatedFiles.length === 0)
+            return false;
+        const anyExists = relatedFiles.some(rf => {
+            const resolved = path.isAbsolute(rf) ? rf : path.join(basePath, rf);
+            return fs.existsSync(resolved);
+        });
+        return !anyExists;
+    }
+    catch {
+        return false;
     }
 }
 /**
@@ -487,9 +558,10 @@ function getDeprecatedCount(basePath) {
 async function performSupersession(basePath, oldId, newId, options) {
     const { sessionId, sessionNumber } = options;
     const timestamp = new Date().toISOString();
-    // Validate IDs at boundary (SEC-002: prevent path traversal)
-    const idPattern = /^(TD|BR|PAT|LES)-\d{3}$/;
-    if (!idPattern.test(oldId) || !idPattern.test(newId)) {
+    // Validate IDs at boundary (SEC-002: prevent path traversal). Drift-proof
+    // delegation to parser.isValidId — sourced from KNOWLEDGE_TYPE_PREFIXES so
+    // K3 expansion types (IW/PROC/SH) accepted automatically. D-K3.5-01.
+    if (!(0, parser_1.isValidId)(oldId) || !(0, parser_1.isValidId)(newId)) {
         return {
             status: 'error',
             domainsUpdated: [],
@@ -609,9 +681,12 @@ async function performSupersession(basePath, oldId, newId, options) {
                 }
             }
         }
-        if (!syncState.knowledge.deprecatedReferences.includes(oldId)) {
-            syncState.knowledge.deprecatedReferences.push(oldId);
-        }
+        // K2.7: Supersession clears the deprecation surface for the old entry.
+        // Once the user has replaced old→new, the old entry is superseded (tracked
+        // via DB superseded_by + status). It should NOT remain in deprecatedReferences
+        // — that array is for entries needing user review, and the supersession IS
+        // the review action.
+        syncManager.removeDeprecatedReference(oldId);
         syncManager.save();
         if (!domainsUpdated.includes('sync'))
             domainsUpdated.push('sync');
@@ -619,6 +694,16 @@ async function performSupersession(basePath, oldId, newId, options) {
     catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         warnings.push(`Sync-state update failed: ${msg}`);
+    }
+    // K2.7 P5 (AC17): Drain oldId from pending-reviews.json. Supersession is the
+    // review action — carry-over surface for oldId becomes stale once old→new
+    // is recorded. Isolated try so drain failure does not block supersession.
+    try {
+        (0, pending_reviews_1.drainPendingReview)(path.join(basePath, '.clear'), oldId);
+    }
+    catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        warnings.push(`Pending-reviews drain failed for ${oldId}: ${msg}`);
     }
     // === 4. Audit log ===
     try {

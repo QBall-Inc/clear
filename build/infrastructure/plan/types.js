@@ -52,12 +52,12 @@ exports.DEFAULT_PROGRESS_WEIGHTS = {
     integration: 0.1
 };
 /**
- * Default risk thresholds (from plan-defaults.yaml)
+ * Default risk thresholds (0-100 percentage)
  */
 exports.DEFAULT_RISK_THRESHOLDS = {
-    majorRed: 0.8,
-    majorYellow: 0.6,
-    minorYellow: 0.9
+    majorRed: 80,
+    majorYellow: 60,
+    minorYellow: 90
 };
 /**
  * Default plan configuration

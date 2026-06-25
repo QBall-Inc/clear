@@ -19,8 +19,8 @@ None.
 ## Execution
 
 ```bash
-RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/workpackage/cli/lifecycle-cli.js" pause --clear-dir=.clear 2>/dev/null)
-CONTEXT=$(echo "$RESULT" | jq -r '.additionalContext // .error // "No active workpackage to pause"')
+RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/workpackage/cli/lifecycle-cli.js" pause --clear-dir=./.clear 2>/dev/null)
+CONTEXT=$(echo "$RESULT" | jq -r '.message // .error // "No active workpackage to pause"')
 echo "$CONTEXT"
 ```
 

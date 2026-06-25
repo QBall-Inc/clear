@@ -23,7 +23,7 @@ INPUT=$(cat)
 
 # Extract fields from input
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"')
-CWD=$(echo "$INPUT" | jq -r '.cwd // "."')
+CWD=$(canonicalize_cwd "$(echo "$INPUT" | jq -r '.cwd // "."')")
 MANUAL=$(echo "$INPUT" | jq -r '.manual // false')
 
 # Define paths
@@ -83,16 +83,57 @@ GIT_BRANCH=""
 if command -v git &> /dev/null && [ -d "${CWD}/.git" ]; then
   GIT_BRANCH=$(cd "$CWD" && git branch --show-current 2>/dev/null || echo "unknown")
   # shellcheck disable=SC2034  # Extracted for potential handoff content
-  GIT_STATUS=$(cd "$CWD" && git status --porcelain 2>/dev/null | head -30 || echo "")
+  GIT_STATUS=$(cd "$CWD" && git --no-optional-locks status --porcelain 2>/dev/null | head -30 || echo "")
 fi
 
-# Get workpackage info from sync state (if available)
+# AC4 multi-source workpackage lookup —
+# Primary: workpackage.json activeWorkpackage (displayId) + registry.yaml title.
+# Fallback: sync-state.json (backward compat) → "Not set". yq runtime-detected
+# per S163 D2; awk fallback parses registry.yaml when yq is absent.
+# Note: "completed this session" marker (S163 D3) deferred — workpackage.json
+# tracks only the current active WP, not per-WP history, so the data needed
+# to implement the marker is not yet plumbed. See WP-DF3 / follow-up POST.
 WORKPACKAGE_ID=""
 WORKPACKAGE_NAME=""
-if [ -f "$SYNC_STATE_FILE" ]; then
+WP_STATE_FILE="${STATE_DIR}/workpackage.json"
+REGISTRY_FILE="${CLEAR_DIR}/workpackages/registry.yaml"
+
+if [ -f "$WP_STATE_FILE" ]; then
+  WORKPACKAGE_ID=$(jq -r '.activeWorkpackage // empty' "$WP_STATE_FILE" 2>/dev/null)
+fi
+
+if [ -n "$WORKPACKAGE_ID" ] && [ -f "$REGISTRY_FILE" ]; then
+  if command -v yq >/dev/null 2>&1; then
+    WORKPACKAGE_NAME=$(yq -r ".workpackages[] | select(.id == \"${WORKPACKAGE_ID}\") | .title // \"\"" "$REGISTRY_FILE" 2>/dev/null)
+  else
+    # awk regex uses \047 (octal for single quote) to avoid bash quoting hell.
+    WORKPACKAGE_NAME=$(awk -v target="$WORKPACKAGE_ID" '
+      /^  - id:[[:space:]]/ {
+        val = $0
+        sub(/^  - id:[[:space:]]*/, "", val)
+        sub(/[[:space:]]*$/, "", val)
+        sub(/^[\047"]/, "", val)
+        sub(/[\047"]$/, "", val)
+        in_target = (val == target)
+        next
+      }
+      in_target && /^    title:[[:space:]]/ {
+        sub(/^    title:[[:space:]]*/, "", $0)
+        sub(/[[:space:]]*$/, "", $0)
+        sub(/^[\047"]/, "", $0)
+        sub(/[\047"]$/, "", $0)
+        print
+        exit
+      }
+    ' "$REGISTRY_FILE")
+  fi
+fi
+
+# Fallback to sync-state.json (backward compat) if workpackage.json was empty.
+if [ -z "$WORKPACKAGE_ID" ] && [ -f "$SYNC_STATE_FILE" ]; then
   SYNC_STATE=$(cat "$SYNC_STATE_FILE")
   WORKPACKAGE_ID=$(echo "$SYNC_STATE" | jq -r '.workpackage.displayId // ""')
-  WORKPACKAGE_NAME=$(echo "$SYNC_STATE" | jq -r '.workpackage.name // ""')
+  WORKPACKAGE_NAME=$(echo "$SYNC_STATE" | jq -r '.workpackage.title // ""')
 fi
 
 # Build workpackage string
@@ -117,7 +158,7 @@ status: PARTIAL
 # Token Metrics
 tokens_pct: ${TOKEN_PERCENT}
 tokens_count: ${CACHE_READ_TOKENS}
-prompts: ${PROMPT_COUNT}
+conversation_turns: ${PROMPT_COUNT}
 
 # Code Files (update before finalizing)
 prod_files_created: 0
@@ -168,6 +209,26 @@ actual_hours: 2.5
 - **Decision:** What was decided
 - **Rationale:** Why this choice was made
 - **Impact:** What this affects
+
+## Patterns Established
+
+<!-- Patterns established or refined this session. One bullet per pattern.
+     Include the PAT-N ID if you captured this via /cf-knowledge.
+     Leave bullets empty if nothing applies. -->
+- **<pattern-name>**: <description>
+
+## Learnings
+
+<!-- Discrete session learnings. One bullet per learning.
+     Include the LES-N ID if you captured this via /cf-knowledge.
+     Leave bullets empty if nothing applies. -->
+- <learning>
+
+## Patterns Observed
+
+<!-- Patterns observed in-session but not yet established as canonical.
+     One bullet per observation. Leave bullets empty if nothing applies. -->
+- <observation>
 
 ## Changes This Session
 

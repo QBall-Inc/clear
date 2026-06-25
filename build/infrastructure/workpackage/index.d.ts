@@ -4,7 +4,7 @@
  * Public exports for workpackage management functionality.
  */
 export * from './types';
-export { parseWorkpackageFile, parseWorkpackageContent, parseRegistryFile, parseStateFile, writeStateFile, serializeWorkpackage, WorkpackageParseError } from './parser';
+export { parseWorkpackageFile, parseWorkpackageContent, parseRegistryFile, parseStateFile, writeStateFile, serializeWorkpackage, WorkpackageParseError, WorkpackageParseErrorCode } from './parser';
 export { WorkpackageRegistryManager, WorkpackageRegistryError } from './registry';
 export { InvalidTransitionError, TransitionTrigger, isValidTransition, getTransitionTrigger, isAutomaticTransition, validateTransition, getValidTransitions, getTransitionRules, isActiveStatus, isTerminalStatus, isBlockedStatus, canStart, canPause, canComplete, canArchive, getStatusActions, ALL_STATUSES, DEFAULT_VISIBLE_STATUSES } from './state-machine';
 export { formatStatus, formatProgress, formatDate, formatDependencyStatus, listWorkpackages, showWorkpackage, showActiveStatus, showNoActiveWorkpackage, runStatusCLI, ListOptions, StatusCLIOptions } from './cli/status-cli';

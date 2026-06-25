@@ -13,10 +13,14 @@ Load knowledge entries into the current context. Token-aware: adjusts volume bas
 ## Execution
 
 ```bash
-node "$CLEAR_PLUGIN_ROOT/build/infrastructure/knowledge/cli/load-cli.js" --level="$LEVEL" --clear-dir=.clear
+node "$CLEAR_PLUGIN_ROOT/build/infrastructure/knowledge/cli/load-cli.js" --level="$LEVEL" --clear-dir=./.clear
 ```
 
-Append optional flags as provided (e.g., `--type=PAT --workpackage=WP-04`).
+Append optional flags as provided (e.g., `--context=caching,redis --workpackage=WP-04 --session=157`).
+
+> **Note on type filtering:** the load-cli entry point does NOT accept a
+> type filter. Use `--context=<tag>` for type/topic-relevance filtering
+> instead.
 
 ## Loading Levels
 

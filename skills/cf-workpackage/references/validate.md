@@ -13,8 +13,8 @@ None.
 ## Execution
 
 ```bash
-RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/workpackage/cli/progress-cli.js" validate --clear-dir=.clear 2>/dev/null)
-CONTEXT=$(echo "$RESULT" | jq -r '.additionalContext // "No active workpackage"')
+RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/workpackage/cli/progress-cli.js" validate --clear-dir=./.clear 2>/dev/null)
+CONTEXT=$(echo "$RESULT" | jq -r '.message // "No active workpackage"')
 echo "$CONTEXT"
 ```
 

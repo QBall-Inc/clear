@@ -1,13 +1,13 @@
 # Add Phase to Plan
 
-Adds a new phase to the existing master plan.
+Adds a new phase to the existing master plan via `phase-cli`. The CLI handles systemId generation, position assignment, display ID reindexing, and atomic write-back to `master-plan.yaml`.
 
 ---
 
 ## Parameters
 
-- `<name>` (optional): Phase name (max 80 chars). If not provided, derive from context.
-- `--after <id>`: Insert after this phase (display ID like "Phase-1" or system ID like "ph-12345678"). Default: append at end.
+- `<name>` (required): Phase name (max 80 chars). If not provided, derive from context.
+- `--after=<id>` (optional): Insert after this phase. Accepts display ID (e.g., `phase_1`, `phase_3`) or system ID (e.g., `ph-12a34b56`). Default: append at end.
 
 ---
 
@@ -28,33 +28,57 @@ If `NO_PLAN`: Display "No master plan found. Use `/cf-plan create` to create one
 ### 2. Derive Phase Name
 
 If no explicit name was provided:
-1. Use context from current conversation
-2. Default to "New Phase"
+1. Use context from current conversation.
+2. Default to "New Phase".
 
-### 3. Generate Phase
+### 3. Run phase-cli
 
-- Create a new phase entry with a unique `systemId` (format: `ph-` followed by 8 hex characters).
-- Set status to `not_started`.
-- If `--after <id>` was provided, insert after the specified phase.
-- Otherwise, append at the end of the phases list.
+```bash
+AFTER_FLAG=""
+if [[ -n "$AFTER_ID" ]]; then AFTER_FLAG="--after=$AFTER_ID"; fi
 
-### 4. Reindex Phases
+RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/plan/cli/phase-cli.js" \
+  --cwd="$PROJECT_DIR" \
+  --name="$PHASE_NAME" \
+  $AFTER_FLAG \
+  --session-id="$SESSION_ID" 2>/dev/null)
 
-After insertion, reindex all phase display IDs sequentially (Phase-1, Phase-2, Phase-3, etc.). System IDs (`ph-xxxx`) remain stable and unchanged.
-
-### 5. Write Updated Plan
-
-Write the updated phases list back to `master-plan.yaml`.
-
-### 6. Display Output
-
+STATUS=$(echo "$RESULT" | jq -r '.status // .success // "error"')
 ```
-Phase added: {displayId} - "{name}"
 
-Position: {position} (after {previousPhase})
-System ID: {systemId}
+The CLI does the following internally:
+- Generates a stable `systemId` (format: `ph-` + 8 hex characters).
+- Assigns position based on `--after=<id>` or appends to end.
+- Reindexes display IDs for downstream phases (system IDs unchanged).
+- Writes the updated `master-plan.yaml` atomically.
 
-Phases:
-  {list all phases with displayId, name, and status}
-  {mark the new phase with "<- NEW"}
+### 4. Display Output
+
+```bash
+CONTEXT=$(echo "$RESULT" | jq -r '.message // .error // "Unknown error"')
+echo "$CONTEXT"
 ```
+
+Present the new phase's display ID, name, system ID, and position to the user. If downstream phases were renumbered, list the new IDs so the user can update any external references.
+
+---
+
+## Important Notes
+
+**Do NOT manually edit master-plan.yaml.** The PreToolUse guard blocks Write/Edit on `.clear/` paths. `phase-cli` uses `fs.writeFileSync` (invisible to the guard) — always use the CLI.
+
+**Display ID reindexing.** Inserting a phase at position N reindexes all phases after N. If you have references to old display IDs (e.g., in dev plan YAMLs, session handoffs, or knowledge entries), those are NOT auto-updated.
+
+---
+
+## Error Handling
+
+- Exit code 2: Plan file not found (run `/cf-plan create` first).
+- Exit code 1: Missing `--name` argument or invalid `--after=<id>`.
+
+---
+
+## Related Subcommands
+
+- `phases` — list existing phases (file-read; use this before adding to choose a sensible `--after`).
+- `create` — create a brand-new plan if none exists.

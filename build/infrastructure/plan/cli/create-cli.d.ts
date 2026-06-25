@@ -32,7 +32,17 @@ export interface CreatePlanInput {
     /** Session ID for audit logging */
     sessionId?: string;
 }
+/**
+ * Create-plan CLI output.
+ *
+ * Dual-mode envelope: `additionalContext` is the Claude Code hook spec;
+ * `message` is the canonical CLI shape (read by skill jq queries). Both
+ * carry identical human-readable text — populated by `withEnvelope` at
+ * the CLI boundary.
+ */
 export interface CreatePlanOutput {
+    success?: boolean;
+    message?: string;
     status: 'success' | 'exists' | 'error';
     /** Plan name used */
     planName?: string;

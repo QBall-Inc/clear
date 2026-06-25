@@ -13,13 +13,13 @@ echo "Blocker Analysis"
 echo "================"
 echo ""
 
-RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/plan/cli/blockers-cli.js" --clear-dir=.clear 2>/dev/null)
+RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/plan/cli/blockers-cli.js" --clear-dir=./.clear 2>/dev/null)
 ```
 
 ### 2. Display Blockers
 
 ```bash
-CONTEXT=$(echo "$RESULT" | jq -r '.additionalContext // "Unable to analyze blockers"')
+CONTEXT=$(echo "$RESULT" | jq -r '.message // "Unable to analyze blockers"')
 echo "$CONTEXT"
 ```
 

@@ -15,7 +15,7 @@ Search entries by term with optional filters.
 ## Execution
 
 ```bash
-node "$CLEAR_PLUGIN_ROOT/build/infrastructure/knowledge/cli/search-cli.js" --query="$TERM" --clear-dir=.clear
+node "$CLEAR_PLUGIN_ROOT/build/infrastructure/knowledge/cli/search-cli.js" --query="$TERM" --clear-dir=./.clear
 ```
 
 Append optional flags as needed (e.g., `--max-results=5 --include-superseded`).

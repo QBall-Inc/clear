@@ -129,7 +129,7 @@ export interface WorkpackageSummary {
     displayId: string;
     /** Human-readable title */
     title: string;
-    /** Progress percentage (0-1) */
+    /** Progress (0-100 percentage) */
     progress: number;
     /** Current session ID */
     sessionId: string;
@@ -166,8 +166,10 @@ export interface PlanSummary {
     activePhaseSystemId: string;
     /** Active phase display ID (e.g., "Phase-1") */
     activePhaseDisplayId: string;
-    /** Phase progress percentage (0-1) */
+    /** Active-phase progress (0-100 percentage) */
     phaseProgress: number;
+    /** Whole-plan progress (0-100 percentage) — weighted average across all phases. Written by rollupPlanProgress. */
+    planProgress?: number;
     /** Current blockers */
     blockers: string[];
 }
@@ -190,19 +192,6 @@ export interface CrossDomainLinks {
     workpackageKnowledge: Record<string, KnowledgeLink[]>;
 }
 /**
- * State hashes for change detection
- */
-export interface StateHashes {
-    /** Hash of session state */
-    session: string;
-    /** Hash of workpackage state */
-    workpackage: string;
-    /** Hash of plan state */
-    plan: string;
-    /** Hash of knowledge state */
-    knowledge: string;
-}
-/**
  * Sync state hub structure
  *
  * Central aggregation point for cross-domain state.
@@ -218,8 +207,6 @@ export interface SyncState {
     lastUpdated: string;
     /** Last full sync timestamp */
     lastFullSync: string;
-    /** Prompts since last sync */
-    promptsSinceSync: number;
     /** Session state summary */
     session: SessionSummary;
     /** Active workpackage summary */
@@ -232,8 +219,6 @@ export interface SyncState {
     knowledge: KnowledgeSummary;
     /** Cross-domain links */
     links: CrossDomainLinks;
-    /** State hashes for change detection */
-    stateHashes: StateHashes;
 }
 /**
  * Create a fresh default sync state with current timestamps.
@@ -276,10 +261,20 @@ export type KnowledgeLinkStatus = 'active' | 'deprecated' | 'superseded' | 'arch
  */
 export type AuditDomain = 'session' | 'workpackage' | 'plan' | 'knowledge' | 'sync';
 /**
+ * Domain categories for the debug validator (/cf-debug).
+ *
+ * Superset of AuditDomain that adds 'install' — the Claude Code install-wiring
+ * health check (.claude/settings.json statusLine + env vars + plugin statusline.sh).
+ * Kept distinct from AuditDomain so the audit-log domain set (which backs a
+ * Record<AuditDomain, string> state-file map in context-hub) is unaffected — the
+ * install domain has no .clear/ state file.
+ */
+export type DebugDomain = AuditDomain | 'install';
+/**
  * Audit action types
  * P2.7: Added 'pause', 'resume', 'archive' for lifecycle management
  */
-export type AuditAction = 'create' | 'update' | 'delete' | 'link' | 'unlink' | 'deprecate' | 'supersede' | 'purge' | 'reorder' | 'defer' | 'migrate' | 'repair' | 'pause' | 'resume' | 'archive';
+export type AuditAction = 'create' | 'update' | 'delete' | 'link' | 'unlink' | 'deprecate' | 'supersede' | 'purge' | 'reorder' | 'defer' | 'migrate' | 'repair' | 'pause' | 'resume' | 'archive' | 'ack';
 /**
  * Audit trigger sources
  */
@@ -355,30 +350,6 @@ export declare function createDefaultAuditIndex(): AuditIndex;
 /** @deprecated Use createDefaultAuditIndex() for fresh timestamps */
 export declare const DEFAULT_AUDIT_INDEX: AuditIndex;
 /**
- * Change detection configuration
- */
-export interface ChangeDetectionConfig {
-    /** Use content checksums for change detection */
-    useChecksums: boolean;
-    /** Use file modification time for change detection */
-    useMtime: boolean;
-}
-/**
- * Sync mode
- */
-export type SyncMode = 'always' | 'on_change' | 'manual';
-/**
- * Sync configuration
- */
-export interface SyncConfig {
-    /** Sync mode */
-    mode: SyncMode;
-    /** Full sync every N prompts regardless of changes */
-    safetyInterval: number;
-    /** Change detection settings */
-    changeDetection: ChangeDetectionConfig;
-}
-/**
  * Audit configuration
  */
 export interface AuditConfig {
@@ -419,8 +390,6 @@ export interface KnowledgeLinkingConfig {
  * Stored in .clear/config/sync.yaml
  */
 export interface CrossDomainSyncConfig {
-    /** Sync settings */
-    sync: SyncConfig;
     /** Audit log settings */
     audit: AuditConfig;
     /** Error handling settings */
@@ -524,21 +493,6 @@ export interface SyncResult {
     errors: string[];
 }
 /**
- * Change detection result
- */
-export interface ChangeDetectionResult {
-    /** Whether any changes were detected */
-    hasChanges: boolean;
-    /** Domains with changes */
-    changedDomains: AuditDomain[];
-    /** Current hashes */
-    currentHashes: StateHashes;
-    /** Previous hashes */
-    previousHashes: StateHashes;
-    /** Whether full sync is required (safety interval) */
-    fullSyncRequired: boolean;
-}
-/**
  * Position update operation
  */
 export interface PositionUpdate {
@@ -590,7 +544,7 @@ export interface ValidationIssue {
     /** Issue severity */
     severity: IssueSeverity;
     /** Domain affected */
-    domain: AuditDomain;
+    domain: DebugDomain;
     /** Issue description */
     message: string;
     /** Entity systemId (if applicable) */
@@ -620,13 +574,20 @@ export interface DebugReport {
         info: number;
         autoRepairable: number;
     };
-    /** State file checksums */
-    stateHashes: StateHashes;
     /** Audit log status */
     auditStatus: {
         currentSession: number;
         entriesInSession: number;
         totalSessions: number;
+    };
+    /**
+     * Native-dependency health. Surfaces whether the better-sqlite3 native binding
+     * actually loads in this process, so an un-adopted code fix (e.g. a rebuilt
+     * binding that never reached the local install) is visible at a glance — even on
+     * a fresh project before any index exists.
+     */
+    dependencies: {
+        sqliteBinding: 'ok' | 'missing';
     };
 }
 /**

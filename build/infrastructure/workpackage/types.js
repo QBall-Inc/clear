@@ -7,11 +7,39 @@
  * Updated Session 33 with Dual-ID Architecture support (P1.6).
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.isWorkpackageSystemId = exports.generateSystemIdFromLegacy = exports.generateWorkpackageSystemId = exports.DEFAULT_WORKPACKAGE_CONFIG = exports.DEFAULT_WORKPACKAGE_STATE = void 0;
+exports.isWorkpackageSystemId = exports.generateSystemIdFromLegacy = exports.generateWorkpackageSystemId = exports.DEFAULT_WORKPACKAGE_CONFIG = exports.DEFAULT_WORKPACKAGE_STATE = exports.WORKPACKAGE_PRIORITIES = exports.WORKPACKAGE_TYPES = void 0;
+exports.isWorkpackageType = isWorkpackageType;
+exports.isWorkpackagePriority = isWorkpackagePriority;
 exports.createDefaultWorkpackageState = createDefaultWorkpackageState;
 exports.hasDualIdSupport = hasDualIdSupport;
 exports.getPreferredId = getPreferredId;
 exports.isLegacyDisplayId = isLegacyDisplayId;
+exports.formatWorkpackageId = formatWorkpackageId;
+// ==============================================================================
+// Runtime Enum Constants + Type Guards
+// ==============================================================================
+// Runtime enum literals are the single source of truth for the type/priority
+// unions above. All write-path validators (create-cli, update-cli) and the
+// read-path parser import these constants so a new value added here propagates
+// without per-site edits.
+exports.WORKPACKAGE_TYPES = [
+    'feature', 'bugfix', 'refactor', 'documentation', 'infrastructure'
+];
+exports.WORKPACKAGE_PRIORITIES = [
+    'critical', 'high', 'medium', 'low'
+];
+/**
+ * Type guard: validate a string against the WorkpackageType union.
+ */
+function isWorkpackageType(type) {
+    return exports.WORKPACKAGE_TYPES.includes(type);
+}
+/**
+ * Type guard: validate a string against the WorkpackagePriority union.
+ */
+function isWorkpackagePriority(priority) {
+    return exports.WORKPACKAGE_PRIORITIES.includes(priority);
+}
 /**
  * Create a fresh default workpackage state with current timestamp.
  * Replaces the old const to avoid stale `new Date()` evaluated at module load.
@@ -101,5 +129,28 @@ function getPreferredId(entry) {
  */
 function isLegacyDisplayId(id) {
     return /^P\d+\.\d+$/.test(id);
+}
+/**
+ * Format a workpackage ID for user-facing display.
+ *
+ * Counterpart to getPreferredId() — that helper is system-preferred for cross-domain
+ * references; this one is user-preferred for messages, errors, and status output.
+ *
+ * Graceful degradation: when style='both' but entry.systemId is absent (undefined or
+ * empty string — legacy WP entries pre-dating dual-ID support), the function returns
+ * just entry.id. Callers requesting 'both' receive the richest representation
+ * available without having to guard for the legacy case themselves.
+ *
+ * @param entry - Workpackage entry or registry entry (must carry .id; .systemId optional)
+ * @param style - 'display' returns just the user-facing ID (e.g. "P5.1");
+ *                'both' returns "P5.1 (wp-647a5f25)" when systemId is present,
+ *                or just "P5.1" when systemId is absent (legacy fallback)
+ * @returns Formatted ID string suitable for user-visible output
+ */
+function formatWorkpackageId(entry, style = 'display') {
+    if (style === 'both' && entry.systemId) {
+        return `${entry.id} (${entry.systemId})`;
+    }
+    return entry.id;
 }
 //# sourceMappingURL=types.js.map

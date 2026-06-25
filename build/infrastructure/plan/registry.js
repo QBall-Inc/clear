@@ -49,10 +49,28 @@ const parser_1 = require("./parser");
 /**
  * Error thrown during registry operations
  */
-/** Commit count ceiling for normalizing activity score (0-1) */
+/** Commit count ceiling for normalizing activity score (output 0-100 percentage) */
 const COMMIT_ACTIVITY_CEILING = 50;
-/** Default test score when tests directory exists but no recent run data */
-const TEST_EXISTS_DEFAULT_SCORE = 0.5;
+/** Default test score (0-100 percentage) when tests directory exists but no recent run data */
+const TEST_EXISTS_DEFAULT_SCORE = 50;
+/**
+ * Legacy phase ID pattern (e.g., "phase_5") — recognized for read-tolerance
+ * normalization in resolvePhase. Canonical form is "Phase-N" (capital P + dash).
+ * Non-canonical forms reach activePhase via legacy plan imports, hand-edits, or
+ * plan-write-cli full-YAML rewrites with hand-edited content.
+ */
+const LEGACY_PHASE_ID_PATTERN = /^phase_([0-9]+)$/i;
+/**
+ * Module-scope guard: which legacy phase IDs have already been warned about
+ * in this process. Without this, every progress-cli / load-cli / next-cli
+ * invocation would emit a fresh stderr line for the same legacy ID — that's
+ * 100+ warnings per session because resolvePhase is called from many sites.
+ *
+ * Keyed on the LEGACY id (e.g., "phase_5"), not the normalized one, so that
+ * each distinct legacy variant gets one warning but a single variant doesn't
+ * repeat.
+ */
+const warnedLegacyPhaseIds = new Set();
 class PlanRegistryError extends Error {
     constructor(message, planId, details) {
         super(message);
@@ -190,8 +208,31 @@ class PlanRegistryManager {
         if ((0, types_1.isPhaseSystemId)(id)) {
             return this.phaseBySystemId.get(id) ?? null;
         }
-        // Otherwise try as display ID
-        return this.phaseByDisplayId.get(id) ?? null;
+        // Try canonical display ID first ("Phase-N")
+        const directHit = this.phaseByDisplayId.get(id);
+        if (directHit) {
+            return directHit;
+        }
+        // Read-tolerance: accept legacy snake_case "phase_N" by normalizing to
+        // canonical "Phase-N". Only emit the one-time warning when the normalized
+        // form actually resolves — a legacy variant for a non-existent N (e.g.,
+        // "phase_99") returns null silently, identical to the canonical-form
+        // not-found case.
+        const legacyMatch = id.match(LEGACY_PHASE_ID_PATTERN);
+        if (legacyMatch) {
+            const normalized = `Phase-${legacyMatch[1]}`;
+            const phase = this.phaseByDisplayId.get(normalized);
+            if (phase) {
+                if (!warnedLegacyPhaseIds.has(id)) {
+                    warnedLegacyPhaseIds.add(id);
+                    process.stderr.write(`[CLEAR] Legacy phase ID format detected ("${id}"). Resolved as "${normalized}". ` +
+                        `Recommend a clean rewrite via plan-write-cli to canonical "Phase-N" format. ` +
+                        `This warning appears once per process.\n`);
+                }
+                return phase;
+            }
+        }
+        return null;
     }
     /**
      * Get display ID for a system ID
@@ -251,12 +292,17 @@ class PlanRegistryManager {
     }
     /**
      * Get the active phase
+     *
+     * Uses resolvePhase so non-canonical activePhase values (legacy snake_case
+     * "phase_N" via plan import / hand-edit / plan-write-cli full-rewrite) still
+     * resolve correctly instead of returning null and breaking next-cli +
+     * progress-cli + state sync.
      */
     getActivePhase() {
         const plan = this.loadPlan();
         if (!plan)
             return null;
-        return this.getPhase(plan.activePhase);
+        return this.resolvePhase(plan.activePhase);
     }
     // ===========================================================================
     // State Management
@@ -286,8 +332,10 @@ class PlanRegistryManager {
         if (!plan) {
             return { ...(0, types_1.createDefaultPlanState)(), sessionId };
         }
-        // Get active phase and its systemId (P1.6)
-        const activePhase = this.getPhase(plan.activePhase);
+        // Get active phase and its systemId (P1.6) — resolvePhase tolerates
+        // legacy snake_case activePhase values so the systemId field still gets
+        // populated instead of silently falling to null.
+        const activePhase = this.resolvePhase(plan.activePhase);
         const activePhaseSystemId = activePhase?.systemId ?? null;
         const now = new Date().toISOString();
         const state = {
@@ -328,7 +376,7 @@ class PlanRegistryManager {
     // ===========================================================================
     /**
      * Get workpackage progress from P1.4 state
-     * @returns Map of workpackage ID to progress (0-1)
+     * @returns Map of workpackage ID to progress (0-100 percentage)
      *
      * Data sources (in priority order):
      * 1. workpackage.json - active workpackage's current progress
@@ -349,7 +397,7 @@ class PlanRegistryManager {
                 if (registry?.workpackages) {
                     for (const wp of registry.workpackages) {
                         if (wp.status === 'complete') {
-                            result[wp.id] = 1.0;
+                            result[wp.id] = 100;
                         }
                         else if (wp.status === 'not_started') {
                             result[wp.id] = 0;
@@ -385,7 +433,10 @@ class PlanRegistryManager {
      * @returns Phase progress result
      */
     calculatePhaseProgress(phaseId) {
-        const phase = this.getPhase(phaseId);
+        // resolvePhase tolerates legacy snake_case input ("phase_5") so callers
+        // that pass plan.activePhase (potentially non-canonical) still get real
+        // progress instead of the 0% sentinel.
+        const phase = this.resolvePhase(phaseId);
         if (!phase) {
             return {
                 phaseId,
@@ -406,14 +457,17 @@ class PlanRegistryManager {
             totalWeight += weight;
             const progress = wpProgress[wpId] ?? 0;
             completedWeight += weight * progress;
-            if (progress >= 1.0) {
+            if (progress >= 100) {
                 completedWorkpackages.push(wpId);
             }
             else {
                 pendingWorkpackages.push(wpId);
             }
         }
-        const overallProgress = totalWeight > 0 ? completedWeight / totalWeight : 0;
+        // overallProgress is sum(weight × percent) / sum(weight) = weighted-average-percent.
+        // Math.round symmetric with the WP-level calculateProgress — every persisted /
+        // observable progress field is integer 0-100.
+        const overallProgress = totalWeight > 0 ? Math.round(completedWeight / totalWeight) : 0;
         return {
             phaseId,
             progress: overallProgress,
@@ -425,7 +479,7 @@ class PlanRegistryManager {
     }
     /**
      * Get commit activity since phase start
-     * @returns Normalized activity score (0-1)
+     * @returns Normalized activity score (0-100 percentage)
      */
     getCommitActivity() {
         try {
@@ -434,8 +488,8 @@ class PlanRegistryManager {
             // Get commit count since phase start
             const result = (0, child_process_1.execFileSync)('git', ['log', '--oneline', '--since', startDate.toISOString()], { cwd: this.projectRoot, encoding: 'utf-8' });
             const commitCount = result.split('\n').filter(Boolean).length;
-            // Normalize: assume COMMIT_ACTIVITY_CEILING+ commits = 100% activity
-            return Math.min(1, commitCount / COMMIT_ACTIVITY_CEILING);
+            // Normalize: COMMIT_ACTIVITY_CEILING+ commits = 100% activity.
+            return Math.round(Math.min(100, (commitCount / COMMIT_ACTIVITY_CEILING) * 100));
         }
         catch {
             return 0;
@@ -443,7 +497,7 @@ class PlanRegistryManager {
     }
     /**
      * Get test status from npm test result
-     * @returns Normalized test score (0-1)
+     * @returns Normalized test score (0-100 percentage)
      */
     getTestStatus() {
         try {
@@ -453,7 +507,7 @@ class PlanRegistryManager {
                 const content = fs.readFileSync(testResultPath, 'utf-8');
                 const results = JSON.parse(content);
                 if (results.passed && results.total) {
-                    return results.passed / results.total;
+                    return Math.round((results.passed / results.total) * 100);
                 }
             }
             // Fallback: check if tests directory exists and has files
@@ -469,7 +523,7 @@ class PlanRegistryManager {
     }
     /**
      * Get documentation coverage
-     * @returns Normalized docs score (0-1)
+     * @returns Normalized docs score (0-100 percentage)
      */
     getDocsCoverage() {
         try {
@@ -491,7 +545,7 @@ class PlanRegistryManager {
                     found++;
                 }
             }
-            return found / docsToCheck.length;
+            return Math.round((found / docsToCheck.length) * 100);
         }
         catch {
             return 0;
@@ -499,7 +553,7 @@ class PlanRegistryManager {
     }
     /**
      * Get integration status
-     * @returns Normalized integration score (0-1)
+     * @returns Normalized integration score (0-100 percentage)
      */
     getIntegrationStatus() {
         // Check for integration markers
@@ -519,7 +573,7 @@ class PlanRegistryManager {
                 }
             }
         }
-        return total > 0 ? completed / total : 0;
+        return total > 0 ? Math.round((completed / total) * 100) : 0;
     }
     /**
      * Calculate multi-signal progress
@@ -582,17 +636,35 @@ class PlanRegistryManager {
         const requirementsPending = [];
         for (const reqId of milestone.requires) {
             const progress = wpProgress[reqId] ?? 0;
-            if (progress >= 1.0) {
+            if (progress >= 100) {
                 requirementsMet.push(reqId);
             }
             else {
                 requirementsPending.push(reqId);
             }
         }
-        // Determine status
+        // Determine status.
+        //
+        // A `major` (or `minor`) milestone auto-achieves: once every requirement is
+        // met it reports `complete`.
+        //
+        // A `gate` milestone NEVER auto-achieves from requirements alone — completion
+        // is a human declaration. When its requirements are all met it reports
+        // `in_progress` ("ready to declare") UNLESS a human has already declared it,
+        // recorded as the persisted plan.json `state.milestones[id].status`. An absent
+        // declaration defaults to "needs declaration" (`in_progress`), never to legacy
+        // auto-complete — the regression guard for every pre-existing consumer gate
+        // that carries no manual-vs-auto marker (the type itself is the semantic; a
+        // gate that wanted requires-driven completion would simply be a `major`).
         let status;
         if (requirementsPending.length === 0) {
-            status = 'complete';
+            if (milestone.type === 'gate') {
+                const declaredStatus = this.loadState().milestones[milestoneId]?.status;
+                status = declaredStatus === 'complete' ? 'complete' : 'in_progress';
+            }
+            else {
+                status = 'complete';
+            }
         }
         else if (requirementsMet.length > 0) {
             status = 'in_progress';
@@ -610,14 +682,14 @@ class PlanRegistryManager {
             const startDate = new Date(state.startedAt);
             const totalDuration = targetDate.getTime() - startDate.getTime();
             const elapsed = now.getTime() - startDate.getTime();
-            const timeConsumed = totalDuration > 0 ? elapsed / totalDuration : 0;
-            const progress = requirementsMet.length / milestone.requires.length;
+            const timeConsumed = totalDuration > 0 ? Math.round((elapsed / totalDuration) * 100) : 0;
+            const progress = Math.round((requirementsMet.length / milestone.requires.length) * 100);
             const threshold = (milestone.type === 'major' || milestone.type === 'gate')
                 ? this.riskThresholds.majorYellow
                 : this.riskThresholds.minorYellow;
             if (timeConsumed > threshold && progress < threshold) {
                 atRisk = true;
-                riskReason = `${Math.round(timeConsumed * 100)}% time consumed with only ${Math.round(progress * 100)}% progress`;
+                riskReason = `${timeConsumed}% time consumed with only ${progress}% progress`;
             }
         }
         return {
@@ -630,22 +702,76 @@ class PlanRegistryManager {
         };
     }
     /**
-     * Mark a milestone as complete
+     * Set a milestone's status across BOTH persistence surfaces in lockstep:
+     *
+     *  - plan.json `state.milestones[id]` — the runtime source of truth that
+     *    checkMilestoneStatus, the rollup, and lifecycle-cli read.
+     *  - master-plan.yaml `milestone.status` — the durable seed re-applied to a
+     *    fresh consumer's plan.json on first load.
+     *
+     * Keeping the two in agreement is the INV-2 invariant the gate-declaration
+     * read-side depends on: the gate branch of checkMilestoneStatus trusts the
+     * plan.json status only because this writer keeps it equal to master-plan.
+     *
+     * `completedAt` is stamped only for `complete`; any residual `completedAt` is
+     * dropped for every other status so a reverted milestone leaves no drift in
+     * either file.
+     *
+     * The master-plan write targets this registry's own `masterPlanYamlPath` (the
+     * exact path it reads from), guaranteeing read/write symmetry regardless of
+     * how `clearDir` was constructed.
+     *
+     * @param milestoneId - Milestone ID
+     * @param status - Target status (complete | in_progress | not_started)
+     */
+    setMilestoneStatus(milestoneId, status) {
+        const timestamp = new Date().toISOString();
+        // Surface 1: plan.json (runtime source of truth)
+        const state = this.loadState();
+        const entry = { status };
+        if (status === 'complete') {
+            entry.completedAt = timestamp;
+        }
+        state.milestones[milestoneId] = entry;
+        state.lastActivity = timestamp;
+        this.saveState(state);
+        // Surface 2: master-plan.yaml (durable seed) — lockstep
+        const plan = this.loadPlan();
+        const milestone = plan?.milestones.find(m => m.id === milestoneId);
+        if (plan && milestone) {
+            milestone.status = status;
+            if (status === 'complete') {
+                milestone.completedAt = timestamp;
+            }
+            else {
+                delete milestone.completedAt;
+            }
+            try {
+                fs.writeFileSync(this.masterPlanYamlPath, (0, parser_1.serializeMasterPlan)(plan), 'utf-8');
+            }
+            catch (err) {
+                // Fire-and-log: plan.json (the runtime SOT) already persisted; surface
+                // the YAML write failure without aborting the status change.
+                process.stderr.write(`[registry] setMilestoneStatus master-plan write-back failed for ${milestoneId}: ${err instanceof Error ? err.message : String(err)}\n`);
+            }
+        }
+    }
+    /**
+     * Mark a milestone as complete. Thin wrapper over setMilestoneStatus so the
+     * lockstep two-surface write lives in one place; preserves existing callers.
      * @param milestoneId - Milestone ID
      */
     markMilestoneComplete(milestoneId) {
-        const state = this.loadState();
-        state.milestones[milestoneId] = {
-            status: 'complete',
-            completedAt: new Date().toISOString()
-        };
-        state.lastActivity = new Date().toISOString();
-        this.saveState(state);
+        this.setMilestoneStatus(milestoneId, 'complete');
     }
     /**
-     * Get milestone risk assessment
+     * Get milestone risk assessment.
+     * Both fields are 0-100 percentages: `timeConsumed` is the fraction of the
+     * milestone timeline elapsed, `progress` is the average WP progress across
+     * the milestone's required workpackages.
+     *
      * @param milestoneId - Milestone ID
-     * @returns Risk data
+     * @returns Risk data with timeConsumed and progress both as 0-100 percentages
      */
     getMilestoneRisk(milestoneId) {
         const milestone = this.getMilestone(milestoneId);
@@ -657,6 +783,8 @@ class PlanRegistryManager {
         for (const reqId of milestone.requires) {
             totalProgress += wpProgress[reqId] ?? 0;
         }
+        // wpProgress values are 0-100 per the calculateProgress contract; the
+        // unweighted average is therefore 0-100.
         const progress = milestone.requires.length > 0
             ? totalProgress / milestone.requires.length
             : 0;
@@ -666,7 +794,7 @@ class PlanRegistryManager {
         const startDate = new Date(state.startedAt);
         const totalDuration = targetDate.getTime() - startDate.getTime();
         const elapsed = now.getTime() - startDate.getTime();
-        const timeConsumed = totalDuration > 0 ? elapsed / totalDuration : 0;
+        const timeConsumed = totalDuration > 0 ? Math.round((elapsed / totalDuration) * 100) : 0;
         return { timeConsumed, progress };
     }
     // ===========================================================================
@@ -682,11 +810,13 @@ class PlanRegistryManager {
         if (!plan)
             return [];
         const targetPhaseId = phaseId ?? plan.activePhase;
-        const phase = this.getPhase(targetPhaseId);
+        // resolvePhase covers legacy snake_case plan.activePhase + caller-provided
+        // legacy targetPhaseId so blocker detection still functions instead of
+        // silently returning an empty list.
+        const phase = this.resolvePhase(targetPhaseId);
         if (!phase)
             return [];
         const blockers = [];
-        // Note: wpProgress available for future workpackage-level blocker detection
         // Check phase dependencies
         if (phase.dependencies) {
             for (const depPhaseId of phase.dependencies) {
@@ -713,6 +843,9 @@ class PlanRegistryManager {
                 const threshold = (milestone.type === 'major' || milestone.type === 'gate')
                     ? this.riskThresholds.majorRed
                     : this.riskThresholds.minorYellow;
+                // Flag when progress lags timeConsumed by more than 20%. Both operands
+                // are 0-100, so 0.8 is a dimensionless lag-tolerance ratio, not a
+                // pre-DR3 0-1 progress threshold (those are now 80/60/90 in RiskThresholds).
                 if (risk.timeConsumed > threshold && risk.progress < risk.timeConsumed * 0.8) {
                     blockers.push({
                         type: 'milestone_risk',
@@ -720,7 +853,7 @@ class PlanRegistryManager {
                         timeConsumed: risk.timeConsumed,
                         progress: risk.progress,
                         severity: (milestone.type === 'major' || milestone.type === 'gate') ? 'high' : 'medium',
-                        description: `Milestone ${milestone.id} at risk: ${Math.round(risk.timeConsumed * 100)}% time, ${Math.round(risk.progress * 100)}% done`
+                        description: `Milestone ${milestone.id} at risk: ${Math.round(risk.timeConsumed)}% time, ${Math.round(risk.progress)}% done`
                     });
                 }
             }
@@ -740,7 +873,7 @@ class PlanRegistryManager {
                     suggestions.push(`Complete ${blocker.blocking} before continuing with ${blocker.blocked}`);
                     break;
                 case 'milestone_risk':
-                    if (blocker.timeConsumed && blocker.timeConsumed > 0.8) {
+                    if (blocker.timeConsumed && blocker.timeConsumed > 80) {
                         suggestions.push(`Consider scope reduction for milestone ${blocker.milestone}`);
                     }
                     else {

@@ -43,19 +43,72 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 const fs = __importStar(require("fs"));
+const yaml = __importStar(require("js-yaml"));
 const parser_1 = require("../parser");
 const writer_1 = require("../writer");
+/**
+ * Top-level keys that must be PRESENT in the raw YAML for --validate-only to pass.
+ *
+ * The lenient parser (parseMasterPlanContent) defaults missing fields to empty
+ * strings/arrays. That permissiveness is right for read paths, but --validate-only
+ * is the audit path for human-authored rewrites — silently accepting a missing
+ * `activePhase` would let typos slip through and corrupt the live plan.
+ *
+ * `activeWorkpackage` is intentionally excluded: a plan can legitimately have no
+ * active WP between phases.
+ */
+const VALIDATE_ONLY_REQUIRED_KEYS = [
+    'version',
+    'projectName',
+    'status',
+    'activePhase',
+    'phases',
+    'milestones',
+];
+/**
+ * Strict required-field check for --validate-only mode (AC26).
+ * Returns list of missing-or-empty top-level keys with field paths.
+ */
+function checkRequiredFieldsStrict(rawYaml) {
+    const parsed = yaml.load(rawYaml, { schema: yaml.JSON_SCHEMA });
+    if (!parsed || typeof parsed !== 'object') {
+        // parser will have thrown already; defensive empty.
+        return [];
+    }
+    const obj = parsed;
+    const missing = [];
+    for (const key of VALIDATE_ONLY_REQUIRED_KEYS) {
+        const value = obj[key];
+        if (value === undefined || value === null) {
+            missing.push(key);
+            continue;
+        }
+        if (typeof value === 'string' && value.trim() === '') {
+            missing.push(`${key} (empty string)`);
+            continue;
+        }
+        if (Array.isArray(value) && value.length === 0 && (key === 'phases')) {
+            // milestones can legitimately be empty array (project may have no milestones)
+            // phases empty would mean no work-structure at all — flag as missing.
+            missing.push(`${key} (empty array)`);
+        }
+    }
+    return missing;
+}
 function parseArgs() {
     const argv = process.argv.slice(2);
     let cwd = '.';
     let backup = false;
+    let validateOnly = false;
     for (const arg of argv) {
         if (arg.startsWith('--cwd='))
             cwd = arg.substring('--cwd='.length);
         else if (arg === '--backup')
             backup = true;
+        else if (arg === '--validate-only')
+            validateOnly = true;
     }
-    return { cwd, backup };
+    return { cwd, backup, validateOnly };
 }
 function readStdin() {
     const fd = fs.openSync('/dev/stdin', 'r');
@@ -80,19 +133,56 @@ if (require.main === module) {
                 'Options:',
                 '  --cwd=<path>                 Project root directory (default: .)',
                 '  --backup                     Create a backup before overwriting',
+                '  --validate-only              Parse + schema-validate input via the master-plan parser,',
+                '                               report errors (line/col where available), and EXIT WITHOUT',
+                '                               WRITING (no backup either). Recommended audit path for ad-hoc',
+                '                               rewrites — confirm intent before mutating disk.',
             ].join('\n')
         }));
         process.exit(0);
     }
-    const { cwd, backup } = parseArgs();
+    const { cwd, backup, validateOnly } = parseArgs();
     try {
         const yamlContent = readStdin();
         if (!yamlContent.trim()) {
             console.error(JSON.stringify({ status: 'error', error: 'No YAML received on stdin' }));
             process.exit(1);
         }
-        // Validate: parse the YAML to ensure it's a valid MasterPlan
+        // Always parse the YAML. parseMasterPlanContent throws on YAML parse errors
+        // AND structural failures (e.g., phase missing `id`). It is INTENTIONALLY
+        // lenient for top-level missing fields — those are caught by the strict
+        // check in --validate-only mode below.
         const plan = (0, parser_1.parseMasterPlanContent)(yamlContent, 'stdin');
+        // --validate-only: also run the strict required-field check (AC26). Reports
+        // schema-level gaps the lenient parser tolerates. Skips writeMasterPlan
+        // entirely on either parse OR strict-validate failure.
+        if (validateOnly) {
+            const missingFields = checkRequiredFieldsStrict(yamlContent);
+            if (missingFields.length > 0) {
+                console.error(JSON.stringify({
+                    status: 'error',
+                    action: 'validate-only',
+                    error: `Missing required top-level field(s): ${missingFields.join(', ')}`,
+                    additionalContext: `[CLEAR] plan-write-cli --validate-only: schema validation failed.\n\n` +
+                        `Missing or empty required field(s):\n${missingFields.map(f => `  - ${f}`).join('\n')}\n\n` +
+                        `Required top-level keys: ${VALIDATE_ONLY_REQUIRED_KEYS.join(', ')}. No file mutation.`,
+                }));
+                process.exit(1);
+            }
+            console.log(JSON.stringify({
+                status: 'success',
+                action: 'validate-only',
+                details: {
+                    version: plan.version,
+                    projectName: plan.projectName,
+                    phaseCount: plan.phases.length,
+                    milestoneCount: plan.milestones.length,
+                    activePhase: plan.activePhase,
+                },
+                additionalContext: '[CLEAR] plan-write-cli --validate-only: parse + schema validation passed. No file mutation.',
+            }));
+            process.exit(0);
+        }
         // Write via writer.ts (handles dir creation, backup, serialization)
         const result = (0, writer_1.writeMasterPlan)(cwd, plan, { backup, createDirs: true });
         console.log(JSON.stringify(result));

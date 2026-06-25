@@ -11,7 +11,7 @@ Remove all workpackage links from a knowledge entry.
 ## Execution
 
 ```bash
-node "$CLEAR_PLUGIN_ROOT/build/infrastructure/knowledge/cli/link-cli.js" unlink "$ID" --clear-dir=.clear
+node "$CLEAR_PLUGIN_ROOT/build/infrastructure/knowledge/cli/link-cli.js" unlink "$ID" --clear-dir=./.clear
 ```
 
 ## Behavior

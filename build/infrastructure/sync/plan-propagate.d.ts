@@ -38,6 +38,13 @@ export interface InsertWorkpackageInput {
     verification?: string[];
     notes?: string[];
     deliverables_text?: string[];
+    /**
+     * Structured form of deliverables with explicit `pattern` + `weight` per entry.
+     * When supplied AND non-empty, takes precedence over `deliverables_text` (the
+     * inference path is skipped entirely). When omitted or empty, `deliverables_text`
+     * drives pattern inference + floor(100/N) weight distribution.
+     */
+    deliverables_structured?: DeliverableStructuredInput[];
     scope_in?: string[];
     scope_out?: string[];
 }
@@ -155,15 +162,27 @@ export interface ReorderWorkpackageResult {
     error?: string;
 }
 /**
- * Update the status field inside a workpackage YAML file on disk.
- * Reads the existing YAML, modifies only the status field, and writes back
- * to preserve all other fields (NFR1: field preservation).
+ * Structured deliverable input form for createWorkpackageFile (AC35 POST-79).
+ * When supplied, explicit `pattern` + `weight` pass through unchanged — bypassing
+ * the inference path that operates on deliverables_text.
+ */
+export interface DeliverableStructuredInput {
+    description: string;
+    pattern?: string;
+    weight?: number;
+    status?: 'not_started' | 'in_progress' | 'complete';
+}
+/**
+ * Update the status and/or progress field inside a workpackage YAML file on disk.
+ * Reads the existing YAML, modifies the targeted field(s), and writes back to
+ * preserve all other fields (NFR1: field preservation).
  *
  * @param wpFilePath - Absolute path to the workpackage YAML file
  * @param newStatus - New status value to write
+ * @param newProgress - New progress value (0-100); omit to leave progress unchanged
  * @throws Re-throws errors so callers can log them (R4 fix: bare catch removed)
  */
-export declare function updateWorkpackageFileStatus(wpFilePath: string, newStatus: string): void;
+export declare function updateWorkpackageFileStatus(wpFilePath: string, newStatus: string, newProgress?: number): void;
 /**
  * Insert a new workpackage at a specific position within a phase.
  *

@@ -43,12 +43,14 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.AuditLogger = void 0;
 exports.createAuditLogger = createAuditLogger;
+exports.getCurrentSession = getCurrentSession;
 exports.createSessionStartEntry = createSessionStartEntry;
 exports.createWorkpackageActivationEntry = createWorkpackageActivationEntry;
 exports.createKnowledgeLinkEntry = createKnowledgeLinkEntry;
 exports.createSyncCompleteEntry = createSyncCompleteEntry;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
+const validation_1 = require("../validation");
 const types_1 = require("./types");
 // ==============================================================================
 // CONSTANTS
@@ -80,7 +82,13 @@ class AuditLogger {
     constructor(basePath, sessionId, sessionNumber, config) {
         this.entriesWritten = 0;
         this.correlationIdCounter = 0;
-        this.basePath = basePath;
+        // Defense-in-depth: validate the path and strip any '.clear' suffix the
+        // upstream caller may have conflated into basePath. validateBasePath
+        // rejects '..' traversal sequences; stripClearSuffix prevents the
+        // `.clear/.clear/<sub>` duplicate-hierarchy leak class. Constructors
+        // are direct-call surfaces (not all callers go through CLI parseArgs),
+        // so input validation belongs here as well.
+        this.basePath = (0, validation_1.stripClearSuffix)((0, validation_1.validateBasePath)(basePath), 'AuditLogger');
         this.currentSessionId = sessionId;
         this.currentSessionNumber = sessionNumber;
         this.config = {
@@ -490,6 +498,67 @@ exports.AuditLogger = AuditLogger;
  */
 function createAuditLogger(basePath, sessionId, sessionNumber, config) {
     return new AuditLogger(basePath, sessionId, sessionNumber, config);
+}
+// ==============================================================================
+// SESSION RESOLVER (for entry-point sessionId defaulting)
+// ==============================================================================
+/**
+ * Resolve the current session identity for audit-emit contexts.
+ *
+ * Precedence:
+ *   1. Explicit overrides from caller (typically `--session-id` / `--session-number`
+ *      argv values parsed by a CLI entry point).
+ *   2. Canonical values read from `<clearDir>/state/session.json` (the
+ *      sync-state authority — populated by knowledge-capture.sh, session-init,
+ *      etc.).
+ *   3. Synthetic fallback `session-${Date.now()}` + sessionNumber 0 — used only
+ *      when no state file exists (e.g., first-ever invocation in a fresh
+ *      project, or unit-test fixtures without session state).
+ *
+ * Returns deterministic values for a given input — same `clearDir` + same
+ * `overrides` => same output across same-millisecond invocations.
+ *
+ * Use at CLI entry points that construct `AuditLogger` and currently default
+ * to `session-${Date.now()}`. The synthetic-only path corrupts audit-log
+ * correlation across the session because every entry gets a fresh timestamp
+ * suffix, breaking downstream cross-domain join queries.
+ *
+ * @param clearDir - .clear directory path (e.g., `.clear`)
+ * @param overrides - Optional explicit sessionId / sessionNumber from argv
+ *                    (caller's existing override takes precedence over the
+ *                    state file)
+ */
+function getCurrentSession(clearDir, overrides) {
+    // Explicit argv values always win — caller knows what they passed.
+    if (overrides?.sessionId && typeof overrides.sessionNumber === 'number') {
+        return { sessionId: overrides.sessionId, sessionNumber: overrides.sessionNumber };
+    }
+    let stateSessionId;
+    let stateSessionNumber;
+    try {
+        const sessionPath = path.join(clearDir, 'state', 'session.json');
+        if (fs.existsSync(sessionPath)) {
+            const content = fs.readFileSync(sessionPath, 'utf-8');
+            const parsed = JSON.parse(content);
+            if (typeof parsed?.sessionId === 'string' && parsed.sessionId.length > 0) {
+                stateSessionId = parsed.sessionId;
+            }
+            // Number.isFinite rejects NaN + Infinity. `typeof === 'number'` alone
+            // would accept NaN (since typeof NaN === 'number'), and a corrupt
+            // session.json could then propagate NaN into audit filenames
+            // (session_NaN.jsonl) and created_session frontmatter.
+            if (Number.isFinite(parsed?.clearSessionNumber)) {
+                stateSessionNumber = parsed.clearSessionNumber;
+            }
+        }
+    }
+    catch {
+        // Fall through to synthetic — corrupt state file should not block CLI work.
+    }
+    return {
+        sessionId: overrides?.sessionId ?? stateSessionId ?? `session-${Date.now()}`,
+        sessionNumber: overrides?.sessionNumber ?? stateSessionNumber ?? 0
+    };
 }
 // ==============================================================================
 // CONVENIENCE LOGGING FUNCTIONS

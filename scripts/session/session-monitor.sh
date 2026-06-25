@@ -38,9 +38,19 @@ INPUT=$(cat)
 # Extract fields from input
 # shellcheck disable=SC2034  # Extracted from input for log context
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"')
-CWD=$(echo "$INPUT" | jq -r '.cwd // "."')
+CWD=$(canonicalize_cwd "$(echo "$INPUT" | jq -r '.cwd // "."')")
 PROMPT=$(echo "$INPUT" | jq -r '.prompt // ""')
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // ""')
+
+# Redirect HOOK_ERROR_LOG to the project's .clear/audit/ (and create it). This
+# script runs as a subprocess of user-prompt.sh, which re-sources common.sh —
+# resetting HOOK_ERROR_LOG to the plugin-root default ${PLUGIN_ROOT}/logs/, a
+# directory that does NOT exist in a consumer plugin install. Without this, the
+# `2>>"$HOOK_ERROR_LOG"` redirect on the update-session call below fails to open
+# its target, which aborts that command BEFORE it runs — silently skipping the
+# session.json tokensUsed refresh. Routing to .clear/audit/ (mkdir'd by
+# use_project_logs) makes the redirect target exist so update-session executes.
+use_project_logs "$CWD"
 
 # Define paths
 CLEAR_DIR="${CWD}/.clear"
@@ -156,6 +166,15 @@ if [ "$TRACKING_METHOD" != "fallback_permanent" ]; then
   # Use || true to prevent set -e from exiting on function failure
   CACHE_READ_TOKENS=$(read_transcript_usage "$TRANSCRIPT_PATH" || echo "")
 
+  # SEC-1: numeric guard before CACHE_READ_TOKENS enters awk arithmetic via calc().
+  # Mirrors the CW_FROM_STATE numeric guard at the contextWindow loader above.
+  # If the transcript field is ever non-numeric (e.g. malformed token-count
+  # serialization), drop it rather than letting it interpolate into the awk
+  # program string.
+  if [ -n "$CACHE_READ_TOKENS" ] && ! [[ "$CACHE_READ_TOKENS" =~ ^[0-9]+$ ]]; then
+    CACHE_READ_TOKENS=""
+  fi
+
   if [ -n "$CACHE_READ_TOKENS" ] && [ "$CACHE_READ_TOKENS" != "" ]; then
     # Observed-max heuristic (R3.4): if cache_read exceeds current window, bump to 1M
     if [ "$CACHE_READ_TOKENS" -gt "$CONTEXT_WINDOW" ] 2>/dev/null; then
@@ -254,6 +273,31 @@ jq --arg ts "$TIMESTAMP" \
     .tokenUsage.criticalShown = $critShown |
     .tokenUsage.emergencyShown = $emergShown' \
    "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+
+# WP-DF3 AC5 (S167 G3 fix): keep sync-state.session.tokensUsed fresh as token
+# usage updates. session-init covers id/number/status at lifecycle start;
+# this op covers the running token count for downstream consumers
+# (POST-53 dashboard token budget bar, /cf-status, etc.).
+SYNC_BRIDGE="${SCRIPTS_DIR}/sync/sync-bridge.sh"
+if [ -x "$SYNC_BRIDGE" ]; then
+  # Absolute token count = estimate × contextWindow size. Cast to integer
+  # since SessionSummary.tokensUsed is `number` (no fractional tokens).
+  TOKENS_USED=$(calc "$TOKEN_ESTIMATE * $CONTEXT_WINDOW" 2>/dev/null || echo "0")
+  TOKENS_USED_INT="${TOKENS_USED%.*}"
+  # STD-006: stricter numeric guard than the simple empty-check.
+  # Any non-digit content (e.g. unexpected calc/awk output) collapses to 0
+  # rather than passing through to jq --argjson where it would error.
+  if ! [[ "$TOKENS_USED_INT" =~ ^[0-9]+$ ]]; then
+    TOKENS_USED_INT=0
+  fi
+  SESSION_DATA=$(jq -nc \
+    --argjson tokens "$TOKENS_USED_INT" \
+    '{tokensUsed: $tokens}' 2>/dev/null) || SESSION_DATA=""
+  if [ -n "$SESSION_DATA" ]; then
+    "$SYNC_BRIDGE" --op=update-session --clear-dir="$CWD" --data="$SESSION_DATA" \
+      >/dev/null 2>>"$HOOK_ERROR_LOG" || true
+  fi
+fi
 
 # Return JSON response
 if [ -n "$CONTEXT_MSG" ]; then

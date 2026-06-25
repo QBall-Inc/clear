@@ -11,11 +11,33 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const registry_1 = require("../registry");
 const parse_args_1 = require("../../cli/parse-args");
+const audit_log_1 = require("../../sync/audit-log");
+const validation_1 = require("../../validation");
+const plan_rollup_1 = require("../../sync/plan-rollup");
 /**
  * Parse command line arguments
+ *
+ * Session-id default resolves through `getCurrentSession` from the canonical
+ * sync state (`<clearDir>/state/session.json`) rather than a synthetic
+ * `session-${Date.now()}` value. Synthetic IDs corrupt audit-log correlation
+ * across the session — every entry would get a fresh timestamp suffix.
+ * Explicit `--session-id=` overrides still win via parseCliArgs.
  */
 function parseArgs() {
-    return (0, parse_args_1.parseCliArgs)({ clearDir: '.clear', sessionId: `session-${Date.now()}` }, [
+    // parseCliArgs requires a sync default. Read clearDir from argv first so
+    // session lookup targets the right directory; validateBasePath rejects
+    // traversal-shaped paths before getCurrentSession touches the filesystem;
+    // resolution falls back to the synthetic ID only when both argv override
+    // and state file are absent.
+    let clearDir = './.clear';
+    for (const arg of process.argv.slice(2)) {
+        if (arg.startsWith('--clear-dir=')) {
+            clearDir = arg.substring('--clear-dir='.length);
+            break;
+        }
+    }
+    const sessionDefault = (0, audit_log_1.getCurrentSession)((0, validation_1.resolveClearDir)((0, validation_1.validateBasePath)(clearDir)).clearSubdir).sessionId;
+    return (0, parse_args_1.parseCliArgs)({ clearDir: './.clear', sessionId: sessionDefault }, [
         { prefix: '--session-id=', apply: (v, o) => { o.sessionId = v; } }
     ]);
 }
@@ -26,7 +48,7 @@ function formatPlanContext(plan, activePhase, progress, milestonesComplete, mile
     const lines = [];
     // Header with progress
     lines.push(`[Plan] ${plan.projectName}`);
-    lines.push(`Phase: ${activePhase?.name ?? plan.activePhase} (${Math.round(progress * 100)}% complete)`);
+    lines.push(`Phase: ${activePhase?.name ?? plan.activePhase} (${Math.round(progress)}% complete)`);
     // Active workpackage
     if (plan.activeWorkpackage) {
         lines.push(`Active: ${plan.activeWorkpackage}`);
@@ -40,7 +62,7 @@ function formatPlanContext(plan, activePhase, progress, milestonesComplete, mile
     }
     // Remaining workpackages in phase
     if (activePhase) {
-        const registry = new registry_1.PlanRegistryManager(parseArgs().clearDir);
+        const registry = new registry_1.PlanRegistryManager((0, validation_1.resolveClearDir)(parseArgs().clearDir).clearSubdir);
         const phaseProgress = registry.calculatePhaseProgress(activePhase.id);
         if (phaseProgress.pendingWorkpackages.length > 0) {
             lines.push(`Remaining in phase: ${phaseProgress.pendingWorkpackages.length} workpackages`);
@@ -52,12 +74,16 @@ function formatPlanContext(plan, activePhase, progress, milestonesComplete, mile
  * Main load operation
  */
 function loadPlan(options) {
-    const registry = new registry_1.PlanRegistryManager(options.clearDir);
+    const { projectRoot, clearSubdir } = (0, validation_1.resolveClearDir)(options.clearDir);
+    const registry = new registry_1.PlanRegistryManager(clearSubdir);
     // Try to load the plan
     const plan = registry.loadPlan();
     if (!plan) {
+        const text = '[Plan] No development plan found. Use /cf-init to create one.';
         return {
-            additionalContext: '[Plan] No development plan found. Use /cf-init to create one.',
+            success: false,
+            message: text,
+            additionalContext: text,
             progress: 0,
             status: 'no_plan'
         };
@@ -69,11 +95,20 @@ function loadPlan(options) {
     if (!activePhase && plan.phases.length > 0) {
         // Find first phase that isn't complete
         activePhase = plan.phases.find(p => p.status !== 'complete') ?? plan.phases[0];
+    }
+    // Canonicalize plan.activePhase once activePhase is known. Covers three
+    // cases: (a) getActivePhase succeeded with legacy snake_case input —
+    // resolvePhase normalized it, write the canonical form back; (b) fallback
+    // fired — store the canonical id from the resolved phase; (c) activePhase
+    // unresolved entirely — plan.activePhase stays as-is for diagnostic value
+    // (downstream calculatePhaseProgress returns 0% via resolvePhase fallback).
+    if (activePhase) {
         plan.activePhase = activePhase.id;
     }
     // Calculate progress
     const phaseProgress = registry.calculatePhaseProgress(plan.activePhase);
-    // Check milestones
+    // Check milestones — milestone.phase compared against canonical activePhase
+    // so legacy plan.activePhase doesn't cause silent zero-milestone results.
     const milestonesComplete = [];
     const milestonesAtRisk = [];
     for (const milestone of plan.milestones) {
@@ -87,13 +122,18 @@ function loadPlan(options) {
             milestonesAtRisk.push(milestone.name);
         }
     }
-    // Update state with calculated progress
+    // Update state with calculated progress — canonical key, no legacy orphans.
     const state = registry.loadState();
     state.phaseProgress[plan.activePhase] = phaseProgress.progress;
     state.lastActivity = new Date().toISOString();
-    registry.saveState(state);
+    // Lockstep: persist plan.json AND mirror phaseProgress into master-plan.yaml
+    // so the two never diverge (this path previously wrote plan.json only).
+    (0, plan_rollup_1.writePhaseProgressLockstep)(registry, plan, state, projectRoot);
+    const text = formatPlanContext(plan, activePhase, phaseProgress.progress, milestonesComplete, milestonesAtRisk);
     return {
-        additionalContext: formatPlanContext(plan, activePhase, phaseProgress.progress, milestonesComplete, milestonesAtRisk),
+        success: true,
+        message: text,
+        additionalContext: text,
         planId: 'master-plan',
         activePhase: plan.activePhase,
         activeWorkpackage: plan.activeWorkpackage,
@@ -124,6 +164,9 @@ if (require.main === module) {
     catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         const result = {
+            success: false,
+            message: errorMessage,
+            additionalContext: errorMessage,
             progress: 0,
             status: 'error',
             error: errorMessage

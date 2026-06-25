@@ -98,7 +98,10 @@ STATUS=$(yaml_value "status")
 # Token Metrics
 TOKENS_PCT=$(yaml_value "tokens_pct")
 TOKENS_COUNT=$(yaml_value "tokens_count")
-PROMPTS=$(yaml_value "prompts")
+# AC6 — field renamed prompts → conversation_turns (Anthropic Messages API convention).
+# yaml_value shim reads new name first, falls back to legacy `prompts` for old handoffs.
+CONVERSATION_TURNS=$(yaml_value "conversation_turns")
+[ -z "$CONVERSATION_TURNS" ] && CONVERSATION_TURNS=$(yaml_value "prompts")
 
 # Code Files
 PROD_FILES_CREATED=$(yaml_value "prod_files_created")
@@ -227,7 +230,7 @@ echo "Doc Files:         ${DOCS_CREATED:-0} created, ${DOCS_MODIFIED:-0} modifie
 echo "Tests:             ${TESTS_PASSED:-0}/${TESTS_TOTAL:-0} passed"
 echo "───────────────────────────────────────────────────────────────"
 echo "Tokens:            ${TOKENS_COUNT:-0} (${TOKENS_PCT:-0}%)"
-echo "Prompts:           ${PROMPTS:-0}"
+echo "Conversation Turns: ${CONVERSATION_TURNS:-0}"
 echo "───────────────────────────────────────────────────────────────"
 echo "Session Type:      ${SESSION_TYPE}"
 echo "Complexity:        ${COMPLEXITY:-medium}"
@@ -247,11 +250,11 @@ mkdir -p "$(dirname "$METRICS_FILE")"
 
 # Create CSV header if file doesn't exist
 if [ ! -f "$METRICS_FILE" ]; then
-  echo "session,date,workpackage,status,session_type,lines_prod,lines_test,lines_docs,prod_files_created,prod_files_modified,test_files_created,test_files_modified,docs_created,docs_modified,tests_passed,tests_total,tokens_count,tokens_pct,prompts,complexity,decisions_count,human_hours_equiv,actual_hours,efficiency_mult" > "$METRICS_FILE"
+  echo "session,date,workpackage,status,session_type,lines_prod,lines_test,lines_docs,prod_files_created,prod_files_modified,test_files_created,test_files_modified,docs_created,docs_modified,tests_passed,tests_total,tokens_count,tokens_pct,conversation_turns,complexity,decisions_count,human_hours_equiv,actual_hours,efficiency_mult" > "$METRICS_FILE"
 fi
 
 # Append row
-echo "${SESSION},${DATE},\"${WORKPACKAGE}\",${STATUS},${SESSION_TYPE},${LINES_PROD:-0},${LINES_TEST:-0},${LINES_DOCS:-0},${PROD_FILES_CREATED:-0},${PROD_FILES_MODIFIED:-0},${TEST_FILES_CREATED:-0},${TEST_FILES_MODIFIED:-0},${DOCS_CREATED:-0},${DOCS_MODIFIED:-0},${TESTS_PASSED:-0},${TESTS_TOTAL:-0},${TOKENS_COUNT:-0},${TOKENS_PCT:-0},${PROMPTS:-0},${COMPLEXITY:-medium},${DECISIONS_COUNT:-0},${HUMAN_HOURS},${ACTUAL_HOURS:-2.5},${EFFICIENCY}" >> "$METRICS_FILE"
+echo "${SESSION},${DATE},\"${WORKPACKAGE}\",${STATUS},${SESSION_TYPE},${LINES_PROD:-0},${LINES_TEST:-0},${LINES_DOCS:-0},${PROD_FILES_CREATED:-0},${PROD_FILES_MODIFIED:-0},${TEST_FILES_CREATED:-0},${TEST_FILES_MODIFIED:-0},${DOCS_CREATED:-0},${DOCS_MODIFIED:-0},${TESTS_PASSED:-0},${TESTS_TOTAL:-0},${TOKENS_COUNT:-0},${TOKENS_PCT:-0},${CONVERSATION_TURNS:-0},${COMPLEXITY:-medium},${DECISIONS_COUNT:-0},${HUMAN_HOURS},${ACTUAL_HOURS:-2.5},${EFFICIENCY}" >> "$METRICS_FILE"
 
 echo ""
 echo "✓ Metrics appended to ${METRICS_FILE}"

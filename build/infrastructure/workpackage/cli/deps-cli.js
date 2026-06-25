@@ -11,6 +11,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const registry_1 = require("../registry");
 const parse_args_1 = require("../../cli/parse-args");
+const validation_1 = require("../../validation");
 /**
  * Parse command line arguments
  */
@@ -61,7 +62,7 @@ function formatBlockedContext(workpackageId, blockedBy, dependencies, alternativ
     lines.push('');
     for (const dep of dependencies) {
         const icon = getStatusIcon(dep.status);
-        const progress = dep.progress !== undefined ? ` (${Math.round(dep.progress * 100)}%)` : '';
+        const progress = dep.progress !== undefined ? ` (${Math.round(dep.progress)}%)` : '';
         lines.push(`${icon} ${dep.id} - ${capitalize(dep.status)}${progress}`);
     }
     if (alternatives.length > 0) {
@@ -105,7 +106,7 @@ function validateDependencies(options) {
             error: 'Missing workpackage ID'
         };
     }
-    const registry = new registry_1.WorkpackageRegistryManager(options.clearDir);
+    const registry = new registry_1.WorkpackageRegistryManager((0, validation_1.resolveClearDir)(options.clearDir).clearSubdir);
     // Load the workpackage
     const workpackage = registry.getWorkpackage(options.workpackageId);
     if (!workpackage) {
@@ -162,6 +163,20 @@ function validateDependencies(options) {
         };
     }
 }
+/**
+ * Apply the dual-key envelope to a result before serialization.
+ * `success` is true only for the 'ready' status — 'blocked' / 'circular'
+ * are informationally valid outputs but represent dependency-state failures.
+ */
+function withEnvelope(result) {
+    const text = result.additionalContext ?? result.error ?? '';
+    return {
+        ...result,
+        success: result.status === 'ready',
+        message: text,
+        additionalContext: text,
+    };
+}
 // Main execution — only run when invoked directly
 if (require.main === module) {
     if (process.argv.includes('--help') || process.argv.includes('help')) {
@@ -183,7 +198,7 @@ if (require.main === module) {
     try {
         const options = parseArgs();
         const result = validateDependencies(options);
-        console.log(JSON.stringify(result));
+        console.log(JSON.stringify(withEnvelope(result)));
     }
     catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -191,9 +206,10 @@ if (require.main === module) {
             workpackageId: '',
             dependencies: [],
             status: 'error',
-            error: errorMessage
+            error: errorMessage,
+            additionalContext: errorMessage
         };
-        console.log(JSON.stringify(result));
+        console.log(JSON.stringify(withEnvelope(result)));
     }
 }
 //# sourceMappingURL=deps-cli.js.map

@@ -49,18 +49,24 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.detectProjectState = detectProjectState;
 exports.createDirectoryStructure = createDirectoryStructure;
+exports.ensureClearGitignore = ensureClearGitignore;
 exports.createSession0State = createSession0State;
 exports.createSessionHistory = createSessionHistory;
 exports.createSyncState = createSyncState;
 exports.createDefaultConfig = createDefaultConfig;
 exports.writeStateFiles = writeStateFiles;
 exports.updateProjectClaudeMd = updateProjectClaudeMd;
+exports.updateProjectRulesMd = updateProjectRulesMd;
 exports.runPostInitChecks = runPostInitChecks;
+exports.countClearContents = countClearContents;
+exports.emitDestructionPreview = emitDestructionPreview;
+exports.promptForConfirmation = promptForConfirmation;
 exports.initializeProject = initializeProject;
 exports.createInitError = createInitError;
 exports.formatInitResult = formatInitResult;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
+const readline = __importStar(require("readline"));
 const yaml = __importStar(require("yaml"));
 const types_1 = require("./types");
 const manifest_1 = require("./manifest");
@@ -140,6 +146,77 @@ function createDirectoryStructure(projectDir) {
     }
 }
 // ==============================================================================
+// CLEAR-MANAGED .gitignore (WP-CB-D AC2)
+// ==============================================================================
+/**
+ * Anchor line marking the CLEAR-managed block inside .clear/.gitignore. Its exact
+ * presence makes ensureClearGitignore() a byte-for-byte no-op (idempotency anchor).
+ * ASCII-only so it round-trips cleanly across consumer editors/encodings.
+ */
+const CLEAR_GITIGNORE_ANCHOR = '# CLEAR Framework managed ignores (do not edit this block)';
+/**
+ * CLEAR-managed .clear/.gitignore content. Excludes ONLY the knowledge index — a
+ * rebuilt cache regenerated from .clear/knowledge/entries/ on session start — and
+ * its SQLite journals. Without this, the binary DB + scratch files get swept into a
+ * consumer's `git add -A` (polluting commits + causing binary merge conflicts in
+ * shared repos, since git cannot merge a binary SQLite file). The knowledge SOURCE
+ * (entries/*.md), plans, state, and sessions REMAIN committed — .clear/ is committed
+ * by design (see GITKEEP_DIRS scaffolding above). The text fallback export
+ * (.clear/knowledge/index.json) is intentionally NOT excluded: it is line-mergeable
+ * and serves the SQLite-unavailable degraded-mode load path.
+ */
+const CLEAR_GITIGNORE_BLOCK = `${CLEAR_GITIGNORE_ANCHOR}
+# The knowledge index is a rebuilt cache (regenerated from knowledge/entries/ on
+# session start). Excluding the binary database and its SQLite journals keeps them
+# out of commits and avoids binary merge conflicts in shared repos. Your knowledge
+# SOURCE (knowledge/entries/*.md), plans, and state stay committed.
+knowledge/index.db
+knowledge/index.db-wal
+knowledge/index.db-shm
+`;
+/**
+ * Author (or idempotently ensure) the CLEAR-managed .clear/.gitignore.
+ *
+ * Called by initializeProject() during a fresh init, and by the session-start
+ * self-heal (init-cli --ensure-gitignore) to backfill consumers initialized before
+ * this shipped. Idempotent: when CLEAR_GITIGNORE_ANCHOR is already present the file
+ * is left byte-for-byte untouched; otherwise the managed block is appended to any
+ * existing .gitignore (preserving user-authored lines) or a new file is created.
+ * Writes ONLY inside the consumer's CLEAR-owned .clear/ tree — never the consumer's
+ * root .gitignore.
+ *
+ * @param projectDir - Project (consumer repo) root
+ * @returns true if the file was created/updated; false if already present (no-op)
+ * @throws if .clear/.gitignore is a symlink (refuses to follow)
+ */
+function ensureClearGitignore(projectDir) {
+    const gitignorePath = path.join(projectDir, '.clear', '.gitignore');
+    if (fs.existsSync(gitignorePath)) {
+        // Refuse to follow a symlink (mirrors the CLAUDE.md/rules.md symlink guards —
+        // defense against a shared-env symlink redirecting the write outside .clear/).
+        const stat = fs.lstatSync(gitignorePath);
+        if (stat.isSymbolicLink()) {
+            throw new Error(`ensureClearGitignore: .clear/.gitignore is a symlink (refusing to follow): ${gitignorePath}`);
+        }
+        const content = fs.readFileSync(gitignorePath, 'utf-8');
+        if (content.includes(CLEAR_GITIGNORE_ANCHOR)) {
+            return false; // idempotent no-op — managed block already present
+        }
+        // Ensure exactly one blank line separates any pre-existing user content from the
+        // managed block: add a trailing newline iff the content lacks one, then the `\n`
+        // below contributes the blank line (both branches yield "<content>\n\n<block>").
+        const trailingNewline = content.length > 0 && !content.endsWith('\n') ? '\n' : '';
+        fs.writeFileSync(gitignorePath, `${content}${trailingNewline}\n${CLEAR_GITIGNORE_BLOCK}`, 'utf-8');
+        return true;
+    }
+    // No existing file — create it. The parent .clear/ is expected to exist (init
+    // scaffolds it before this runs; the session-start self-heal runs only for
+    // initialized projects). If .clear/ is somehow absent, fs.writeFileSync throws
+    // ENOENT, which the non-fatal callers record without aborting init/session start.
+    fs.writeFileSync(gitignorePath, CLEAR_GITIGNORE_BLOCK, 'utf-8');
+    return true;
+}
+// ==============================================================================
 // SESSION 0 INITIALIZATION
 // ==============================================================================
 /**
@@ -208,10 +285,27 @@ function createSessionHistory(sessionId, startTime) {
     };
 }
 /**
- * Create initial sync state
+ * Create initial sync state for a freshly-initialized project.
+ *
+ * Null-meaning contract (consumed by validators in
+ * src/infrastructure/sync/context-hub.ts:validate and
+ * src/infrastructure/sync/cli/debug-cli.ts:validateSyncState):
+ *   - workpackage: null   → "no active WP yet" (fresh init has no WP)
+ *   - plan: null          → "no plan created yet"
+ *   - lastFullSync: null  → "no full sync ever performed"
+ *
+ * Validators MUST guard for these null values; accessing
+ * `state.workpackage.systemId` directly throws a TypeError on fresh init.
+ *
+ * Type-system note: Two divergent SyncState interfaces currently exist:
+ * (a) src/infrastructure/init/types.ts — declares workpackage/plan as
+ *     nullable (`{...} | null`) and matches what this function writes;
+ * (b) src/infrastructure/sync/types.ts — declares them non-nullable and
+ *     matches the in-memory shape used by SyncStateManager.
+ * Consolidating the two definitions is tracked separately.
  *
  * @param sessionId - Session ID
- * @returns Sync state object
+ * @returns Sync state object (conforms to init/types.ts SyncState)
  */
 function createSyncState(sessionId) {
     const now = new Date().toISOString();
@@ -219,7 +313,6 @@ function createSyncState(sessionId) {
         version: '1.0',
         lastUpdated: now,
         lastFullSync: null,
-        promptsSinceSync: 0,
         session: {
             id: sessionId,
             number: 0,
@@ -283,53 +376,292 @@ ${yaml.stringify(config)}`;
     fs.writeFileSync(path.join(configDir, 'clear-config.yaml'), configContent, 'utf-8');
 }
 // ==============================================================================
-// CLAUDE.MD UPDATE
+// CLAUDE.MD + RULES.MD UPDATE (WP-DF2 AC1 / OBS-3)
 // ==============================================================================
-/** Session resume instructions to add to project CLAUDE.md */
-const CLAUDE_MD_SECTION = `
-## CLEAR Framework Session Resume
+/**
+ * One-line binding-contract pointer to rules.md. Inserted under the existing
+ * `# Binding Contract` heading at any heading level (#, ##, ###) if found;
+ * otherwise prepended with a new H1 heading.
+ */
+const CLEAR_BINDING_CONTRACT_LINE = 'All work in this project is governed by @.claude/rules/rules.md. Compliance is mandatory and non-negotiable. Failure to follow any rule in rules.md is a contract violation.';
+/**
+ * CLEAR Framework section appended to CLAUDE.md. Idempotency anchor: presence
+ * of `# CLEAR Framework` H1 anywhere in CLAUDE.md causes the entire injection
+ * (binding line + this block) to be skipped on re-run.
+ */
+const CLEAR_FRAMEWORK_SECTION = `# CLEAR Framework
 
-When a CLEAR session starts or resumes (indicated by session context in additionalContext),
-greet the user with a brief summary:
+All work in this project (sessions, plans, workpackages, knowledge) is orchestrated using the CLEAR Framework. Use of CLEAR Framework skills and CLIs is mandatory to ensure effective product planning, tracking, and development.
 
-1. Session number and project name
-2. Active workpackage (if any)
-3. Last session's final state (1-2 sentences)
-4. Top 2-3 next priorities
+## CLEAR Skill & CLI Registry
 
-Example:
-"Resuming Session 42 for MyProject.
+CLEAR exposes capability through three layers: **user-invocable command skills** (the entry points), **overarching reference skills** (the domain logic the command skills load), and **CLIs** (the underlying execution layer the reference skills route to).
 
-Active: P2.1 - /cf-init Implementation
-Last session: Completed project detection logic, started hook configuration.
+### Command Skills (user-invocable)
 
-Next priorities:
-1. Finish hook merge strategy
-2. Add E2E tests for initialization flow
+| Skill | Purpose |
+|-------|---------|
+| \`/cf-init\` | Initialize CLEAR in the project (one-time setup or reinitialize) |
+| \`/cf-status\` | Display session status, token usage, and context health |
+| \`/cf-workpackage\` | Workpackage lifecycle — view, list, create, start, pause, track progress, validate, complete, delete |
+| \`/cf-plan\` | Plan management — status, progress, blockers, phases, next steps |
+| \`/cf-knowledge\` | Knowledge base — search, view, capture, index, link, deprecate, supersede entries |
+| \`/cf-handoff\` | Generate a session handoff document |
+| \`/cf-reload\` | Reload CLEAR context after manual edits or context drift |
+| \`/cf-debug\` | Run diagnostics on CLEAR state; optionally repair issues |
+| \`/cf-help\` | Reference and guided walkthrough for CLEAR commands |
 
-Ready to continue. What would you like to work on?"
+### Overarching Reference Skills
+
+These are loaded by the command skills above; they encode the domain logic and routing rules for each area. Reference them directly when reasoning about how CLEAR handles a particular domain:
+
+| Skill | Domain |
+|-------|--------|
+| \`session-management\` | Session lifecycle — token tracking, handoff preparation, early-end protocol |
+| \`plan-management\` | Plan lifecycle — creation from briefs, Bulwark plan import, blocker resolution, next-step recommendations |
+| \`workpackage-management\` | Workpackage lifecycle — start, pause, complete, defer, reorder, progress, dependency checks |
+| \`knowledge-management\` | Knowledge actions — capture, search, link, deprecate, supersede, status |
+
+### CLIs
+
+CLIs live under \`$CLAUDE_PLUGIN_ROOT/build/infrastructure/<domain>/cli/\` across five domains: \`init\`, \`knowledge\`, \`plan\`, \`workpackage\`, \`sync\`. Invoke via \`node $CLAUDE_PLUGIN_ROOT/build/infrastructure/<domain>/cli/<name>-cli.js [args]\`.
+
+**Every CLI supports \`--help\`.** Use it to discover flags, subcommands, and examples for any CLI:
+
+\`\`\`bash
+node $CLAUDE_PLUGIN_ROOT/build/infrastructure/knowledge/cli/capture-cli.js --help
+\`\`\`
+
+For a full listing of skills and CLIs, run \`/cf-help --full\`. For command-specific reference, run \`/cf-help <command>\` (e.g., \`/cf-help knowledge\`).
+
+## Session Startup / Resume Protocol
+
+When a CLEAR session starts or resumes (indicated by session context in \`additionalContext\`):
+
+1. Read the prior session's handoff (path surfaced in session-start context, typically \`.clear/sessions/\`).
+2. Read \`.clear/state/sync-state.json\` for active workpackage, plan state, and session metadata.
+3. Greet the user with a brief summary:
+   - Session number and project name
+   - Active workpackage (if any) with progress
+   - Last session's final state (1-2 sentences)
+   - Top 2-3 next priorities from the active workpackage and plan
+4. Outline the session plan and confirm with the user before beginning implementation.
+
+## In-Session Protocol
+
+- Use \`/cf-*\` skills for CLEAR operations. Reach for direct CLI invocation only when no skill covers the operation.
+- Capture decisions, lessons, and patterns at the moment they emerge using \`/cf-knowledge\`. Do not defer capture to session end.
+- Update workpackage progress as acceptance criteria complete using \`/cf-workpackage\`.
+- Honor the rules.md contract at all times.
+- Track token consumption against the checkpoints defined in rules.md (SR2). Run \`/cf-status\` at each checkpoint.
+
+## Session End Protocol
+
+1. Run \`/cf-handoff\` to generate the handoff document for the next session.
+2. Update the plan with current status (active workpackage, progress, blockers).
+3. Commit all session changes to git. Ask the user before pushing to remote.
+4. Communicate next-session priorities to the user.
 `;
 /**
- * Update project's CLAUDE.md with session resume instructions
+ * CLEAR-unique rules appended to .claude/rules/rules.md. Idempotency anchor:
+ * presence of `## CLEAR Framework Rules` H2 anywhere in rules.md causes the
+ * append to be skipped on re-run.
+ *
+ * Bulwark-covered rules (CS, T, V, ID, TR, OR, SA, SC, CN, WR1-WR2, SR1-SR4)
+ * are deliberately omitted. Rule codes use CR- prefix to prevent collision
+ * with Bulwark codes when both plugins append to the same file.
+ */
+const CLEAR_RULES_SECTION = `## CLEAR Framework Rules
+
+The following rules are CLEAR-specific and govern session, plan, workpackage, and knowledge operations in this project. Per CLAUDE.md, compliance is mandatory; violations are contract violations.
+
+### Skill Surface (CR-SS)
+
+#### CR-SS-1: Skills Are the Preferred Surface for CLEAR Operations
+Use \`/cf-*\` skills for CLEAR operations. Direct CLI invocation (\`node $CLAUDE_PLUGIN_ROOT/build/...\`) is reserved for operations that no skill covers, or for scripting outside an interactive session. Run any CLI with \`--help\` to discover its flags.
+
+### Plan Rules (CR-PR)
+
+#### CR-PR-1: Plan-Traceable Work
+Every task and workpackage must trace to a phase or milestone in the active plan. Free-floating work is not allowed.
+
+#### CR-PR-2: Plan State Reflects Reality
+Update plan state (active workpackage, phase progress, blockers) as work progresses. Use \`/cf-plan\` and \`/cf-workpackage\` to keep state current. Do not let plan state drift from actual progress.
+
+### Workpackage Rules (CR-WR)
+
+#### CR-WR-1: Acceptance Criteria Are Verification Contracts
+A workpackage is not complete until every acceptance criterion is verified. Mark progress only when AC verification passes.
+
+### Knowledge Rules (CR-KR)
+
+#### CR-KR-1: Capture in the Moment
+Capture decisions, lessons, and patterns using \`/cf-knowledge\` at the moment they emerge. Session-end capture loses context and detail.
+
+#### CR-KR-2: Link Knowledge to Artifacts
+When capturing knowledge tied to specific files, use \`--add-related-file\` (repeatable) to establish bi-directional links. Use \`--session-id\` for session-scoped auto-linking.
+
+#### CR-KR-3: Deprecate, Don't Delete
+When a decision or pattern is superseded, use \`/cf-knowledge\` to deprecate or supersede the prior entry. Do not delete — the history is the audit trail.
+`;
+/**
+ * Regex to detect an existing `# Binding Contract` heading at any level (H1-H3),
+ * case-insensitive. Allows CLEAR's binding line to be inserted under a Bulwark-
+ * authored or user-authored contract heading without creating a duplicate H1.
+ *
+ * S165 fix-batch FX-3 + FX-9: use `[ \t]+` / `[ \t]*` (not `\s+` / `\s*`) so the
+ * regex cannot match across newlines (e.g., a `# Binding\nContract` typo would
+ * have false-matched under the prior `\s+`). Renamed with CLEAR_ prefix to match
+ * the project's constant-naming convention.
+ */
+const CLEAR_BINDING_CONTRACT_HEADING_RE = /^#{1,3}[ \t]+Binding[ \t]+Contract[ \t]*$/im;
+/**
+ * Idempotency anchor for `updateProjectClaudeMd`. Matches the H1 heading
+ * `# CLEAR Framework` at line start only.
+ *
+ * S166 P0 fix: prior code used `content.includes('# CLEAR Framework')` which
+ * was a substring of the legacy H2 `## CLEAR Framework - Session Resume
+ * Instructions` (every pre-S165 CLEAR-initialized consumer project carries
+ * this) — substring match returned true as a false-positive idempotency hit
+ * and silently skipped the new governance block injection on migration.
+ *
+ * Case-sensitive H1-only: the upstream `CLEAR_FRAMEWORK_SECTION` always emits
+ * `# CLEAR Framework` in this exact casing, so the matcher does not need an
+ * `i` flag. The intentional asymmetry with `CLEAR_BINDING_CONTRACT_HEADING_RE`
+ * (which is H1-H3 + case-insensitive) reflects different anchor uniqueness:
+ * the framework H1 is CLEAR-injected only, never user-authored.
+ */
+const CLEAR_FRAMEWORK_H1_RE = /^# CLEAR Framework$/m;
+/**
+ * Update project's CLAUDE.md with CLEAR governance + framework registry block.
+ *
+ * Two-step injection:
+ * 1. Binding contract line: if existing `# Binding Contract` heading (any level,
+ *    case-insensitive) is found, insert CLEAR's one-line @-mention under it
+ *    (preserving heading level, no duplication if line already present). If no
+ *    existing heading, prepend a new `# Binding Contract` H1 with the line.
+ * 2. CLEAR Framework section: append the full block (Skill Registry + 3 protocols)
+ *    at the end of the file.
+ *
+ * Idempotency: presence of `# CLEAR Framework` H1 anywhere in the file causes
+ * the entire injection to be skipped on re-run.
  *
  * Note: This updates the USER'S project CLAUDE.md, not clear-framework's.
  *
  * @param projectDir - Project directory
  */
 function updateProjectClaudeMd(projectDir) {
+    // S165 fix-batch FX-5: actionable fail-fast (CS3) when projectDir doesn't exist,
+    // so direct callers (outside initializeProject's controlled flow) get a clear
+    // error instead of a downstream ENOENT.
+    if (!fs.existsSync(projectDir)) {
+        throw new Error(`updateProjectClaudeMd: project directory does not exist: ${projectDir}`);
+    }
     const claudeMdPath = path.join(projectDir, 'CLAUDE.md');
-    let content = '';
-    // Read existing content if file exists
+    // S165 fix-batch FX-11: refuse symlinked CLAUDE.md. fs.writeFileSync follows
+    // symlinks by default; in shared environments a malicious or accidental symlink
+    // could write outside projectDir. lstatSync inspects the link itself.
     if (fs.existsSync(claudeMdPath)) {
-        content = fs.readFileSync(claudeMdPath, 'utf-8');
-        // Check if section already exists
-        if (content.includes('## CLEAR Framework Session Resume')) {
-            return; // Already has the section
+        const stat = fs.lstatSync(claudeMdPath);
+        if (stat.isSymbolicLink()) {
+            throw new Error(`updateProjectClaudeMd: CLAUDE.md is a symlink (refusing to follow): ${claudeMdPath}`);
         }
     }
-    // Append the section
-    const newContent = content + CLAUDE_MD_SECTION;
-    fs.writeFileSync(claudeMdPath, newContent, 'utf-8');
+    let content = '';
+    if (fs.existsSync(claudeMdPath)) {
+        content = fs.readFileSync(claudeMdPath, 'utf-8');
+        // Idempotency anchor — see CLEAR_FRAMEWORK_H1_RE docblock for the S166 P0
+        // false-positive history that motivates the line-anchored H1 match.
+        if (CLEAR_FRAMEWORK_H1_RE.test(content)) {
+            return;
+        }
+    }
+    // Step 1: Binding contract line
+    // S165 fix-batch CR-4: removed dead `headingMatch.index !== undefined` guard —
+    // RegExpExecArray.index is typed `number` and is always present on a successful exec.
+    const headingMatch = CLEAR_BINDING_CONTRACT_HEADING_RE.exec(content);
+    if (headingMatch) {
+        // Existing heading found at any level — check whether our line is already
+        // in the section body before inserting (avoid duplication when Bulwark also
+        // references the same rules.md).
+        const headingEndIdx = headingMatch.index + headingMatch[0].length;
+        // Section body extends to the next H1-H3 heading or EOF
+        const remainder = content.slice(headingEndIdx);
+        const nextHeadingMatch = /^#{1,3}\s+/m.exec(remainder);
+        const sectionEndIdx = nextHeadingMatch
+            ? headingEndIdx + nextHeadingMatch.index
+            : content.length;
+        const sectionBody = content.slice(headingEndIdx, sectionEndIdx);
+        if (!sectionBody.includes('@.claude/rules/rules.md')) {
+            // Insert CLEAR's line directly after the heading. Trim leading newlines
+            // from existing body so spacing stays clean.
+            const before = content.slice(0, headingEndIdx);
+            const after = content.slice(headingEndIdx).replace(/^\n+/, '');
+            content = `${before}\n\n${CLEAR_BINDING_CONTRACT_LINE}\n\n${after}`;
+        }
+    }
+    else {
+        // No existing heading — prepend a new H1 + line. Preserve any existing
+        // content underneath.
+        const separator = content.length > 0 && !content.startsWith('\n') ? '\n' : '';
+        content = `# Binding Contract\n\n${CLEAR_BINDING_CONTRACT_LINE}\n${separator}\n${content}`;
+    }
+    // Step 2: Append CLEAR Framework section
+    if (content.length > 0 && !content.endsWith('\n')) {
+        content += '\n';
+    }
+    content += `\n${CLEAR_FRAMEWORK_SECTION}`;
+    fs.writeFileSync(claudeMdPath, content, 'utf-8');
+}
+/**
+ * Update project's .claude/rules/rules.md with CLEAR-unique rules section.
+ *
+ * Append-only contract: existing rules.md content is never modified. Creates the
+ * file (and parent .claude/rules/ directory) if absent. Appends `## CLEAR Framework
+ * Rules` section if not already present.
+ *
+ * Idempotency: presence of `## CLEAR Framework Rules` H2 anywhere in the file
+ * causes the append to be skipped on re-run.
+ *
+ * @param projectDir - Project directory
+ */
+function updateProjectRulesMd(projectDir) {
+    // S165 fix-batch FX-5: actionable fail-fast (CS3) when projectDir doesn't exist.
+    if (!fs.existsSync(projectDir)) {
+        throw new Error(`updateProjectRulesMd: project directory does not exist: ${projectDir}`);
+    }
+    const rulesDir = path.join(projectDir, '.claude', 'rules');
+    const rulesMdPath = path.join(rulesDir, 'rules.md');
+    // S165 fix-batch FX-11: refuse symlinked rules.md (defense against shared-env
+    // misuse). lstatSync inspects the link itself rather than following it.
+    if (fs.existsSync(rulesMdPath)) {
+        const stat = fs.lstatSync(rulesMdPath);
+        if (stat.isSymbolicLink()) {
+            throw new Error(`updateProjectRulesMd: rules.md is a symlink (refusing to follow): ${rulesMdPath}`);
+        }
+    }
+    let content = '';
+    if (fs.existsSync(rulesMdPath)) {
+        content = fs.readFileSync(rulesMdPath, 'utf-8');
+        // Idempotency: CLEAR section already present → skip.
+        // NOTE: deliberate asymmetry with `updateProjectClaudeMd` (which uses the
+        // line-anchored `CLEAR_FRAMEWORK_H1_RE` after the S166 P0 substring-bug
+        // fix). `## CLEAR Framework Rules` has no shorter prefix that could appear
+        // as a substring in a different heading; the H1 anchor `# CLEAR Framework`
+        // does (legacy `## CLEAR Framework - Session Resume Instructions`).
+        if (content.includes('## CLEAR Framework Rules')) {
+            return;
+        }
+    }
+    else {
+        // Ensure parent dir exists before writing
+        fs.mkdirSync(rulesDir, { recursive: true });
+    }
+    if (content.length > 0 && !content.endsWith('\n')) {
+        content += '\n';
+    }
+    content += content.length > 0 ? `\n${CLEAR_RULES_SECTION}` : CLEAR_RULES_SECTION;
+    fs.writeFileSync(rulesMdPath, content, 'utf-8');
 }
 // ==============================================================================
 // POST-INIT CHECKS
@@ -379,6 +711,77 @@ function runPostInitChecks(projectDir) {
             : 'Knowledge base is empty. Use /cf-knowledge capture to add entries',
     });
     return checks;
+}
+/**
+ * Count the user-visible artifacts in .clear/ for the destruction preview.
+ *
+ * Categories (per AC8):
+ *   - knowledge entries: files under .clear/knowledge/entries/ (excludes
+ *     index.db, index.json, .schemas/, and .gitkeep — those are framework
+ *     infrastructure, not user content)
+ *   - workpackages: files under .clear/workpackages/ (excludes .gitkeep)
+ *   - session handoffs: files under .clear/sessions/ (excludes .gitkeep)
+ *   - audit log files: files under .clear/audit/ (jsonl per session, plus
+ *     hook-errors.log + hooks.log; counted as "audit log files" because
+ *     line-counting jsonl entries can be expensive on large logs and the
+ *     category is sufficient signal for the destruction preview)
+ */
+function countClearContents(projectDir) {
+    const countDir = (subpath) => {
+        const dir = path.join(projectDir, '.clear', ...subpath);
+        if (!fs.existsSync(dir))
+            return 0;
+        return fs.readdirSync(dir).filter((n) => n !== '.gitkeep').length;
+    };
+    return {
+        knowledgeEntries: countDir(['knowledge', 'entries']),
+        workpackages: countDir(['workpackages']),
+        sessionHandoffs: countDir(['sessions']),
+        auditLogFiles: countDir(['audit']),
+    };
+}
+/**
+ * Emit the destruction preview to stderr per AC8 format.
+ *
+ * Always emitted even when --yes (AC9) — preserves audit-trail visibility
+ * for the destructive operation regardless of prompt-skip mode.
+ */
+function emitDestructionPreview(counts, plannedBackupPath) {
+    const lines = [
+        '',
+        '--reinit-clean will DELETE:',
+        `  - ${counts.knowledgeEntries} knowledge entries`,
+        `  - ${counts.workpackages} workpackages`,
+        `  - ${counts.sessionHandoffs} session handoffs`,
+        `  - ${counts.auditLogFiles} audit log files (one per session + hook logs)`,
+        `  - Backup will be created at: ${plannedBackupPath}`,
+        '  - Restore later with: cf-init --restore-from-backup',
+        '',
+    ];
+    for (const line of lines) {
+        process.stderr.write(line + '\n');
+    }
+}
+/**
+ * Read a single line from stdin via readline. The prompt itself is written
+ * to stderr (not stdout) so the CLI's JSON stdout output remains clean.
+ *
+ * @returns true iff the user responded with exactly 'y' or 'yes' (case-insensitive,
+ *          trimmed). Any other input — including 'N', empty string, EOF, or
+ *          non-y/yes text — returns false. AC8 default-no posture.
+ */
+async function promptForConfirmation() {
+    return new Promise((resolve) => {
+        const rl = readline.createInterface({
+            input: process.stdin,
+            output: process.stderr,
+        });
+        rl.question('Continue? [y/N]: ', (answer) => {
+            rl.close();
+            const trimmed = answer.trim().toLowerCase();
+            resolve(trimmed === 'y' || trimmed === 'yes');
+        });
+    });
 }
 // ==============================================================================
 // INIT STEP HELPER
@@ -435,7 +838,7 @@ function runInitStep(stepName, action, errorCode, steps, baseResult) {
  * @returns Initialization result
  */
 async function initializeProject(options) {
-    const { projectDir, force = false, clearVersion = manifest_1.CLEAR_VERSION, commandVersion = manifest_1.COMMAND_VERSION, } = options;
+    const { projectDir, force = false, clearVersion = manifest_1.CLEAR_VERSION, commandVersion = manifest_1.COMMAND_VERSION, skipPrompt = false, } = options;
     const steps = [];
     const projectName = path.basename(projectDir);
     let projectId = '';
@@ -447,21 +850,25 @@ async function initializeProject(options) {
         // Step 1: Detect project state
         const state = detectProjectState(projectDir);
         steps.push({ step: 'detect_state', success: true });
-        // Handle state-based logic
-        if (state.state === 'unknown') {
-            return {
-                success: false,
-                projectName,
-                projectPath: projectDir,
-                projectId: '',
-                sessionId: '',
-                steps,
-                checks: [],
-                error: createInitError('UNKNOWN_CLEAR_STATE', state.error || '').message,
-            };
-        }
-        if (state.state === 'initialized') {
+        // Handle state-based logic. Both 'unknown' and 'initialized' represent
+        // a pre-existing .clear/ directory that requires force-mode recovery to
+        // proceed. The recovery sequence (preview → prompt → backup → remove)
+        // is identical between the two; only the non-force error message differs.
+        // Merging avoids drift between two near-duplicate recovery paths.
+        if (state.state === 'unknown' || state.state === 'initialized') {
             if (!force) {
+                if (state.state === 'unknown') {
+                    return {
+                        success: false,
+                        projectName,
+                        projectPath: projectDir,
+                        projectId: '',
+                        sessionId: '',
+                        steps,
+                        checks: [],
+                        error: createInitError('UNKNOWN_CLEAR_STATE', state.error || '').message,
+                    };
+                }
                 return {
                     success: false,
                     projectName,
@@ -473,9 +880,56 @@ async function initializeProject(options) {
                     error: createInitError('ALREADY_INITIALIZED', state.manifest).message,
                 };
             }
+            // Emit the destruction preview to stderr BEFORE any filesystem mutation.
+            // Counts come from the current .clear/ via countClearContents. Compute
+            // the backup path ONCE here and thread it into createBackup() so the
+            // user-visible "Backup will be created at: X" matches the actual created
+            // location byte-for-byte.
+            const previewCounts = countClearContents(projectDir);
+            const previewTs = new Date().toISOString().replace(/[:.]/g, '-');
+            const plannedBackupPath = path.join(projectDir, `.clear.backup.${previewTs}`);
+            emitDestructionPreview(previewCounts, plannedBackupPath);
+            // --yes (skipPrompt=true) bypasses the [y/N] gate but the destruction
+            // preview above ALWAYS emits for audit-trail visibility.
+            if (!skipPrompt) {
+                const confirmed = await promptForConfirmation();
+                if (!confirmed) {
+                    process.stderr.write('[CLEAR] Reinit cancelled — no changes made.\n');
+                    return {
+                        success: false,
+                        cancelled: true,
+                        projectName,
+                        projectPath: projectDir,
+                        projectId: state.manifest?.clear.project_id || '',
+                        sessionId: '',
+                        steps,
+                        checks: [],
+                    };
+                }
+            }
+            // TOCTOU guard: re-detect state immediately before the destructive call.
+            // The initial detection happens before the (potentially long) destruction
+            // preview + user confirmation prompt. A concurrent CLEAR session could
+            // legitimately change the .clear/ state between detection and backup —
+            // for example, completing a fresh init on what we classified as 'unknown'.
+            // Abort the destruction rather than back up an actively-being-written
+            // directory that the user did not preview.
+            const stateNow = detectProjectState(projectDir);
+            if (stateNow.state !== state.state) {
+                return {
+                    success: false,
+                    projectName,
+                    projectPath: projectDir,
+                    projectId: stateNow.manifest?.clear.project_id || '',
+                    sessionId: '',
+                    steps,
+                    checks: [],
+                    error: `CONCURRENT_STATE_CHANGE: .clear/ state changed from '${state.state}' to '${stateNow.state}' between detection and backup. Aborting to avoid destroying concurrent work. Re-run /cf-init --reinit-clean if the change was intentional.`,
+                };
+            }
             // Force mode: backup and remove existing
             try {
-                backupPath = (0, manifest_1.createBackup)(projectDir);
+                backupPath = (0, manifest_1.createBackup)(projectDir, plannedBackupPath);
                 steps.push({ step: 'create_backup', success: true });
                 (0, manifest_1.removeExistingClear)(projectDir);
                 steps.push({ step: 'remove_existing', success: true });
@@ -490,7 +944,7 @@ async function initializeProject(options) {
                     success: false,
                     projectName,
                     projectPath: projectDir,
-                    projectId: '',
+                    projectId: state.manifest?.clear.project_id || '',
                     sessionId: '',
                     steps,
                     checks: [],
@@ -527,6 +981,20 @@ async function initializeProject(options) {
         stepResult = runInitStep('configure_hooks', () => (0, hooks_config_1.configureHooks)(projectDir), 'SETTINGS_WRITE_FAIL', steps, base());
         if (stepResult)
             return stepResult;
+        // Step 5.5: Author the CLEAR-managed .clear/.gitignore (non-fatal, WP-CB-D AC2).
+        // Keeps the rebuilt knowledge index + its SQLite journals out of the consumer's
+        // commits; knowledge source / plans / state stay committed.
+        try {
+            ensureClearGitignore(projectDir);
+            steps.push({ step: 'ensure_gitignore', success: true });
+        }
+        catch (error) {
+            steps.push({
+                step: 'ensure_gitignore',
+                success: false,
+                error: error instanceof Error ? error.message : 'Unknown error',
+            });
+        }
         // Step 6: Update project CLAUDE.md (non-fatal)
         try {
             updateProjectClaudeMd(projectDir);
@@ -540,7 +1008,21 @@ async function initializeProject(options) {
                 error: error instanceof Error ? error.message : 'Unknown error',
             });
         }
-        // Step 7: Run post-init checks
+        // Step 7: Update project .claude/rules/rules.md with CLEAR-unique rules
+        // (non-fatal). Bulwark-convention path; append-only co-existence with any
+        // existing rules.md content.
+        try {
+            updateProjectRulesMd(projectDir);
+            steps.push({ step: 'update_rules_md', success: true });
+        }
+        catch (error) {
+            steps.push({
+                step: 'update_rules_md',
+                success: false,
+                error: error instanceof Error ? error.message : 'Unknown error',
+            });
+        }
+        // Step 8: Run post-init checks
         const checks = runPostInitChecks(projectDir);
         steps.push({ step: 'post_init_checks', success: true });
         return {
@@ -581,20 +1063,18 @@ async function initializeProject(options) {
 function createInitError(code, context) {
     const errors = {
         ALREADY_INITIALIZED: {
-            message: 'CLEAR is already initialized in this project.',
+            message: 'CLEAR is already initialized in this project. Run `/cf-init --reinit-clean` to back it up to .clear.backup.<timestamp>/ and reinitialize.',
             recovery: [
-                'To reinitialize, run: /cf-init --force',
-                'Warning: This will backup and replace existing configuration.',
+                'To reinitialize, run: /cf-init --reinit-clean',
+                'This will back up the existing .clear/ to .clear.backup.<timestamp>/ before reinitializing.',
             ],
         },
         UNKNOWN_CLEAR_STATE: {
-            message: 'Unrecognized .clear/ directory found.',
+            message: 'Unrecognized .clear/ directory found. Run `/cf-init --reinit-clean` to back it up to .clear.backup.<timestamp>/ and reinitialize.',
             recovery: [
-                'This directory was not created by CLEAR (no manifest file).',
-                'Cannot safely initialize without risking data loss.',
-                'Options:',
-                '  1. Remove .clear/ manually if it is not needed',
-                '  2. Investigate contents: ls -la .clear/',
+                'This .clear/ directory was not created by CLEAR (manifest is missing or unparseable).',
+                'To recover, run: /cf-init --reinit-clean',
+                'This will back up the existing .clear/ to .clear.backup.<timestamp>/ before reinitializing.',
             ],
         },
         PERMISSION_DENIED: {
@@ -640,7 +1120,7 @@ function createInitError(code, context) {
         code,
         message: errorDef.message,
         recovery: errorDef.recovery,
-        context: typeof context === 'object' ? context : { detail: context },
+        context: typeof context === 'object' && context !== null ? context : { detail: context },
     };
 }
 /**

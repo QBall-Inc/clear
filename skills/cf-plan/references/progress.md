@@ -13,13 +13,13 @@ echo "Plan Progress by Phase"
 echo "======================"
 echo ""
 
-RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/plan/cli/progress-cli.js" --clear-dir=.clear 2>/dev/null)
+RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/plan/cli/progress-cli.js" --clear-dir=./.clear 2>/dev/null)
 ```
 
 ### 2. Display Formatted Progress
 
 ```bash
-CONTEXT=$(echo "$RESULT" | jq -r '.additionalContext // empty')
+CONTEXT=$(echo "$RESULT" | jq -r '.message // empty')
 if [ -n "$CONTEXT" ]; then
   echo "$CONTEXT"
 else

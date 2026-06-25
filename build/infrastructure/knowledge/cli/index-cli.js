@@ -54,6 +54,59 @@ const db_1 = require("../db");
 const tfidf_1 = require("../tfidf");
 const parser_1 = require("../parser");
 const types_1 = require("../types");
+const registry_1 = require("../../workpackage/registry");
+/**
+ * Read linked_workpackages from a knowledge entry's .md frontmatter without
+ * the full parser overhead. Returns an empty array if the file is missing,
+ * malformed, or has no linked_workpackages field. Used by fullRebuild's
+ * WP-PS7 phase_b AC15 hydration step (S189) to recover workpackage_id from
+ * disk on full index rebuild.
+ */
+function readLinkedWorkpackagesFromFile(filePath) {
+    if (!fs.existsSync(filePath))
+        return [];
+    try {
+        const content = fs.readFileSync(filePath, 'utf-8');
+        const parsed = (0, parser_1.parseFrontmatter)(content);
+        if (!parsed)
+            return [];
+        const lw = parsed.frontmatter.linked_workpackages;
+        if (lw === undefined || lw === null)
+            return [];
+        return Array.isArray(lw) ? [...lw] : [String(lw)];
+    }
+    catch {
+        return [];
+    }
+}
+/**
+ * DB-only lifecycle fields — set by targeted UPDATE paths (deprecate, supersede,
+ * link, dismiss), never written to markdown frontmatter. incrementalUpdate must
+ * preserve these during INSERT OR REPLACE to avoid the S134 bug class (silent
+ * lifecycle data loss on re-index).
+ *
+ * When K3 adds a new type with new lifecycle fields, add them here. The
+ * `satisfies` clause ensures each entry is a valid KnowledgeEntry key at
+ * compile time.
+ */
+const DB_ONLY_LIFECYCLE_FIELDS = [
+    'workpackage_id',
+    'phase_id',
+    'deprecated_at',
+    'deprecated_reason',
+    'archived_at',
+    'deprecation_type',
+    'superseded_at',
+    'surfaced_count',
+    'supersession_reviewed',
+];
+function preserveDbLifecycleFields(target, source) {
+    for (const field of DB_ONLY_LIFECYCLE_FIELDS) {
+        // Safe: DB_ONLY_LIFECYCLE_FIELDS is a compile-time subset of keyof KnowledgeEntry,
+        // so target[field] and source[field] share the same indexed type.
+        target[field] = source[field];
+    }
+}
 /**
  * Parse command line arguments
  */
@@ -64,6 +117,7 @@ function parseArgs() {
     let checkThresholds = false;
     let currentSession = 1;
     let force = false;
+    let updateCounts = null;
     for (const arg of args) {
         if (arg.startsWith('--clear-dir=')) {
             clearDir = arg.split('=')[1];
@@ -80,11 +134,14 @@ function parseArgs() {
         else if (arg === '--force') {
             force = true;
         }
+        else if (arg.startsWith('--update-counts=')) {
+            updateCounts = arg.split('=')[1];
+        }
     }
     if (clearDir) {
         clearDir = (0, validation_1.validateBasePath)(clearDir);
     }
-    return { clearDir, mode, checkThresholds, currentSession, force };
+    return { clearDir, mode, checkThresholds, currentSession, force, updateCounts };
 }
 /**
  * Load knowledge configuration
@@ -165,8 +222,51 @@ function fullRebuild(db, entriesDir, currentSession) {
             tfidfIndex.addDocument(entry.id, text);
         }
         tfidfIndex.rebuildIdf();
+        // WP-PS7 phase_b AC15 (S189): hydrate workpackage_id from .md frontmatter
+        // linked_workpackages. parseKnowledgeFile sets workpackage_id=null because
+        // it has no WP registry access; the hydration step resolves the first
+        // linked_workpackages entry (display ID, e.g. P1.1) through the WP registry
+        // to a system ID (wp-abc123) for storage in the DB column. Without this,
+        // every full rebuild would lose the WP link even when .md frontmatter has
+        // it. resolveWorkpackage failures are silent — the entry keeps null
+        // workpackage_id and the .md remains the source of truth (the migration
+        // helper AC16 reconciles back-fill).
+        //
+        // WP registry resolution happens at the orchestrator level (here), not in
+        // parser.ts, to keep the parser dependency-free (no WP registry coupling).
+        let wpRegistry = null;
+        try {
+            const clearDir = path.dirname(path.dirname(entriesDir));
+            wpRegistry = new registry_1.WorkpackageRegistryManager(clearDir);
+        }
+        catch {
+            // Registry unavailable (e.g., fresh project without workpackages/).
+            // Skip hydration; entries keep workpackage_id=null.
+        }
+        const hydratedEntries = entries.map(entry => {
+            // Read raw frontmatter linked_workpackages — parseKnowledgeFile doesn't
+            // surface this on KnowledgeEntry (the schema field lives on the
+            // KnowledgeEntryFrontmatter type, not KnowledgeEntry).
+            const linked = readLinkedWorkpackagesFromFile(entry.file_path);
+            if (!linked || linked.length === 0 || !wpRegistry) {
+                return entry;
+            }
+            try {
+                const wp = wpRegistry.resolveWorkpackage(linked[0]);
+                if (!wp)
+                    return entry;
+                return {
+                    ...entry,
+                    workpackage_id: wp.systemId ?? wp.id,
+                    phase_id: wp.phase ?? null,
+                };
+            }
+            catch {
+                return entry;
+            }
+        });
         // Add TF-IDF vectors to entries
-        const entriesWithVectors = entries.map(entry => ({
+        const entriesWithVectors = hydratedEntries.map(entry => ({
             ...entry,
             tfidf_vector: tfidfIndex.getVector(entry.id)
         }));
@@ -291,6 +391,12 @@ function incrementalUpdate(db, entriesDir) {
             const entry = (0, parser_1.parseKnowledgeFile)(file);
             if (entry) {
                 entry.tfidf_vector = tfidfIndex.getVector(entry.id);
+                // Preserve DB-only lifecycle fields from existing row (S134 bug class).
+                // Single-sourced via DB_ONLY_LIFECYCLE_FIELDS — add a field there to extend.
+                const existing = db.getEntry(entry.id);
+                if (existing) {
+                    preserveDbLifecycleFields(entry, existing);
+                }
                 if (db.upsertEntry(entry)) {
                     updated++;
                 }
@@ -350,11 +456,12 @@ async function main() {
                 '  --check-thresholds           Check if reindex thresholds are exceeded',
                 '  --session=<number>           Current session number (default: 1)',
                 '  --force                      Force full reindex even if not needed',
+                '  --update-counts=<path>       Batch-update surfaced_count from JSONL file',
             ].join('\n')
         }));
         process.exit(0);
     }
-    const { clearDir, mode, checkThresholds, currentSession, force } = parseArgs();
+    const { clearDir, mode, checkThresholds, currentSession, force, updateCounts } = parseArgs();
     if (!clearDir) {
         console.error(JSON.stringify({
             success: false,
@@ -374,6 +481,66 @@ async function main() {
         process.exit(1);
     }
     try {
+        // Update counts mode — batch-update surfaced_count from JSONL file
+        if (updateCounts) {
+            // SEC-S189-001 (S189 stop-hook CR): containment check on user-supplied path.
+            // The current caller (knowledge-drain.sh) always passes ${clear_dir}/state/...,
+            // but the CLI is exposed and a future invocation path could pass an arbitrary
+            // file. Reject any --update-counts target that resolves outside clearDir.
+            const resolvedCounts = path.resolve(updateCounts);
+            const resolvedClear = path.resolve(clearDir);
+            if (!resolvedCounts.startsWith(resolvedClear + path.sep)) {
+                console.log(JSON.stringify({
+                    success: false,
+                    mode: 'update-counts',
+                    error: '--update-counts path must resolve under --clear-dir'
+                }));
+                return;
+            }
+            if (!fs.existsSync(updateCounts)) {
+                console.log(JSON.stringify({
+                    success: true,
+                    mode: 'update-counts',
+                    updated: 0,
+                    reason: 'JSONL file not found'
+                }));
+                return;
+            }
+            const content = fs.readFileSync(updateCounts, 'utf-8').trim();
+            if (!content) {
+                console.log(JSON.stringify({
+                    success: true,
+                    mode: 'update-counts',
+                    updated: 0,
+                    reason: 'JSONL file empty'
+                }));
+                return;
+            }
+            // Aggregate counts per entry_id
+            const counts = new Map();
+            for (const line of content.split('\n')) {
+                if (!line.trim())
+                    continue;
+                try {
+                    const event = JSON.parse(line);
+                    if (event.entry_id) {
+                        counts.set(event.entry_id, (counts.get(event.entry_id) || 0) + 1);
+                    }
+                }
+                catch {
+                    // Skip malformed lines
+                }
+            }
+            const updated = db.updateSurfacedCounts(counts);
+            console.log(JSON.stringify({
+                success: true,
+                mode: 'update-counts',
+                updated,
+                totalEvents: content.split('\n').filter(l => l.trim()).length,
+                uniqueEntries: counts.size
+            }));
+            return;
+        }
         // Check thresholds mode - just report if rebuild needed
         if (checkThresholds && !force) {
             const { shouldRebuild: needsRebuild, reason } = shouldRebuild(db, currentSession, config);

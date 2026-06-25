@@ -9,7 +9,8 @@
 #   Level C: Default — no match → silent exit (no Node.js spawn)
 #
 # Input: JSON via stdin
-# Output: JSON with stopReason (or {})
+# Output: JSON with {decision: "block", reason: ...} (or {}) — Claude receives the reason
+#         and continues the turn to act on it. stop_hook_active guard prevents recursion.
 
 export SCRIPT_NAME="session-stop"
 source "$(cd "$(dirname "$0")" && pwd)/../lib/common.sh"
@@ -29,14 +30,18 @@ lookup_linked_entries() {
       .index | to_entries | map(select(.key | endswith("/"))) |
       map(select(.key as $k | $fp | startswith($k))) | [.[].value[]] | .[]
     ' "$index_file" 2>/dev/null || true
-  done | sort -u | paste -sd ", " -
+  done | sort -u | paste -sd "," - | sed 's/,/, /g'
 }
 
 # Read input
 INPUT=$(cat)
 
 # Redirect logs to project directory
-CWD=$(echo "$INPUT" | jq -r '.cwd // "."')
+CWD=$(canonicalize_cwd "$(echo "$INPUT" | jq -r '.cwd // "."')")
+
+# WP-CI1: skip on uninitialized projects.
+require_clear_initialized "$CWD" || { echo '{}'; exit 0; }
+
 use_project_logs "$CWD"
 
 # --- Kill switches (global + per-hook) ---
@@ -81,21 +86,23 @@ if [ "$FILE_COUNT" = "0" ]; then
   exit 0
 fi
 
-# Extract file paths from accumulator
-CHANGED_FILES=$(jq -r '[.files[].path]' "$ACCUMULATOR" 2>/dev/null)
-
 # --- Filter exclusions before assessment ---
-FILTERED_FILES=$(echo "$CHANGED_FILES" | jq '[.[] | select(
-  (startswith(".clear/state/") | not) and
-  (startswith(".clear/audit/") | not) and
-  (startswith("logs/") | not) and
-  (startswith("tmp/") | not) and
-  (startswith("sessions/") | not) and
-  (startswith("node_modules/") | not) and
-  (startswith(".claude/") | not) and
-  (startswith(".git/") | not) and
-  (startswith("build/") | not)
-)]')
+# Retain full file objects (path + tool) so Level B can pass tool info to the CLI.
+FILTERED_OBJS=$(jq '[.files[] | select(
+  (.path | startswith(".clear/state/") | not) and
+  (.path | startswith(".clear/audit/") | not) and
+  (.path | startswith(".clear/sessions/") | not) and
+  (.path | startswith("logs/") | not) and
+  (.path | startswith("tmp/") | not) and
+  (.path | startswith("sessions/") | not) and
+  (.path | startswith("node_modules/") | not) and
+  (.path | startswith(".claude/") | not) and
+  (.path | startswith(".git/") | not) and
+  (.path | startswith("build/") | not)
+)]' "$ACCUMULATOR")
+
+FILTERED_FILES=$(echo "$FILTERED_OBJS" | jq '[.[].path]')
+FILTERED_TOOLS=$(echo "$FILTERED_OBJS" | jq -r '[.[].tool] | unique | join(",")')
 
 FILTERED_COUNT=$(echo "$FILTERED_FILES" | jq 'length')
 if [ "$FILTERED_COUNT" = "0" ]; then
@@ -125,17 +132,18 @@ if [ "$LEVEL_A_COUNT" -gt 0 ]; then
   INDEX_FILE="${STATE_DIR}/file-knowledge-index.json"
   LINKED_ENTRIES=$(lookup_linked_entries "$INDEX_FILE" "$FILTERED_FILES")
 
-  # Build file list from ALL filtered files
-  FILE_LIST=$(echo "$FILTERED_FILES" | jq -r '.[] | "- " + .')
+  # Build file list from ALL filtered files (sanitized — file paths reach Claude)
+  FILE_LIST=$(sanitize_for_context "$(echo "$FILTERED_FILES" | jq -r '.[] | "- " + .')")
+  SAFE_LINKED=$(sanitize_for_context "$LINKED_ENTRIES")
 
   # Build linked entries section
-  if [ -n "$LINKED_ENTRIES" ]; then
-    ENTRIES_SECTION="Linked knowledge entries: ${LINKED_ENTRIES}"
+  if [ -n "$SAFE_LINKED" ]; then
+    ENTRIES_SECTION="Linked knowledge entries: ${SAFE_LINKED}"
   else
     ENTRIES_SECTION="No existing knowledge entries are linked to these files."
   fi
 
-  # Compose blocking stopReason with actual newlines (Critic M1)
+  # Compose blocking reason with actual newlines (Critic M1)
   CONTEXT="[CLEAR-STOP] Level A: CLEAR-managed files changed.
 
 Changed files:
@@ -148,9 +156,7 @@ ACTION REQUIRED: Before ending this session, run /cf-knowledge capture to persis
   # Clear accumulator (checkpoint)
   jq -n '{version: "1.0", files: []}' > "$ACCUMULATOR"
 
-  jq -n --arg ctx "$CONTEXT" '{
-    "stopReason": $ctx
-  }'
+  emit_blocking_decision "A" "$CONTEXT" "${FILTERED_COUNT} files, linked=${SAFE_LINKED:-none}"
   exit 0
 fi
 
@@ -163,11 +169,11 @@ if [ -n "$CLI_TOOL" ] && [ -f "$PATTERNS_FILE" ]; then
   # Convert filtered files to JSON string for CLI arg
   FILES_JSON=$(echo "$FILTERED_FILES" | jq -c '.')
 
-  # Run pattern CLI
+  # Run pattern CLI — forward tools so pattern-level tool_filter constraints are honored
   if [[ "$CLI_TOOL" == *.js ]]; then
-    CLI_RESULT=$(node "$CLI_TOOL" --patterns-file="$PATTERNS_FILE" --changed-files="$FILES_JSON" 2>>"$HOOK_ERROR_LOG") || true
+    CLI_RESULT=$(node "$CLI_TOOL" --patterns-file="$PATTERNS_FILE" --changed-files="$FILES_JSON" --tool-filter="$FILTERED_TOOLS" 2>>"$HOOK_ERROR_LOG") || true
   else
-    CLI_RESULT=$(npx ts-node "$CLI_TOOL" --patterns-file="$PATTERNS_FILE" --changed-files="$FILES_JSON" 2>>"$HOOK_ERROR_LOG") || true
+    CLI_RESULT=$(npx ts-node "$CLI_TOOL" --patterns-file="$PATTERNS_FILE" --changed-files="$FILES_JSON" --tool-filter="$FILTERED_TOOLS" 2>>"$HOOK_ERROR_LOG") || true
   fi
 
   # Parse CLI result
@@ -179,18 +185,21 @@ if [ -n "$CLI_TOOL" ] && [ -f "$PATTERNS_FILE" ]; then
     INDEX_FILE="${STATE_DIR}/file-knowledge-index.json"
     LINKED_ENTRIES=$(lookup_linked_entries "$INDEX_FILE" "$FILTERED_FILES")
 
-    # Build file list from ALL filtered files
-    FILE_LIST=$(echo "$FILTERED_FILES" | jq -r '.[] | "- " + .')
+    # Build file list from ALL filtered files (sanitized — file paths + pattern msg reach Claude)
+    FILE_LIST=$(sanitize_for_context "$(echo "$FILTERED_FILES" | jq -r '.[] | "- " + .')")
+    SAFE_LINKED=$(sanitize_for_context "$LINKED_ENTRIES")
+    SAFE_PATTERN_ID=$(sanitize_for_context "$PATTERN_ID")
+    SAFE_PATTERN_MSG=$(sanitize_for_context "$PATTERN_MSG")
 
     # Build linked entries section
-    if [ -n "$LINKED_ENTRIES" ]; then
-      ENTRIES_SECTION="Linked knowledge entries: ${LINKED_ENTRIES}"
+    if [ -n "$SAFE_LINKED" ]; then
+      ENTRIES_SECTION="Linked knowledge entries: ${SAFE_LINKED}"
     else
       ENTRIES_SECTION="No existing knowledge entries are linked to these files."
     fi
 
-    # Compose blocking stopReason with actual newlines (Critic M1)
-    CONTEXT="[CLEAR-STOP] Level B: Change pattern '${PATTERN_ID}' detected. ${PATTERN_MSG}
+    # Compose blocking reason with actual newlines (Critic M1)
+    CONTEXT="[CLEAR-STOP] Level B: Change pattern '${SAFE_PATTERN_ID}' detected. ${SAFE_PATTERN_MSG}
 
 Changed files:
 ${FILE_LIST}
@@ -202,15 +211,46 @@ ACTION REQUIRED: Before ending this session, run /cf-knowledge capture to persis
     # Clear accumulator (checkpoint)
     jq -n '{version: "1.0", files: []}' > "$ACCUMULATOR"
 
-    jq -n --arg ctx "$CONTEXT" '{
-      "stopReason": $ctx
-    }'
+    emit_blocking_decision "B" "$CONTEXT" "pattern=${SAFE_PATTERN_ID}, ${FILTERED_COUNT} files, linked=${SAFE_LINKED:-none}"
     exit 0
   fi
 fi
 
-# --- Level C: No patterns matched — silent exit ---
-# Clear accumulator (checkpoint) even on Level C
-jq -n '{version: "1.0", files: []}' > "$ACCUMULATOR"
+# --- Level C: Threshold-based capture prompt ---
+# Files accumulate across turns. When threshold is met, prompt for knowledge capture.
+# Accumulator is NOT cleared below threshold (persists for next turn).
+LEVEL_C_THRESHOLD=3
+
+if [ "$FILTERED_COUNT" -ge "$LEVEL_C_THRESHOLD" ]; then
+  # Threshold met — fire assessment prompt
+  INDEX_FILE="${STATE_DIR}/file-knowledge-index.json"
+  LINKED_ENTRIES=$(lookup_linked_entries "$INDEX_FILE" "$FILTERED_FILES")
+
+  FILE_LIST=$(sanitize_for_context "$(echo "$FILTERED_FILES" | jq -r '.[] | "- " + .')")
+  SAFE_LINKED=$(sanitize_for_context "$LINKED_ENTRIES")
+
+  if [ -n "$SAFE_LINKED" ]; then
+    ENTRIES_SECTION="Linked knowledge entries: ${SAFE_LINKED}"
+  else
+    ENTRIES_SECTION="No existing knowledge entries are linked to these files."
+  fi
+
+  CONTEXT="[CLEAR-STOP] Level C: Significant session work detected (${FILTERED_COUNT} files changed).
+
+Changed files:
+${FILE_LIST}
+
+${ENTRIES_SECTION}
+
+SUGGESTED: Review whether any technical decisions, architectural patterns, or lessons learned from this work should be captured as knowledge entries. Use /cf-knowledge capture if applicable."
+
+  # Clear accumulator only when prompt fires
+  jq -n '{version: "1.0", files: []}' > "$ACCUMULATOR"
+
+  emit_blocking_decision "C" "$CONTEXT" "${FILTERED_COUNT} files, linked=${SAFE_LINKED:-none}"
+  exit 0
+fi
+
+# Below threshold — keep accumulator for next turn
 echo '{}'
 exit 0

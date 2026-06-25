@@ -33,11 +33,11 @@ STATE_DIR="${CLEAR_DIR}/state"
 STATE_FILE="${STATE_DIR}/session.json"
 AUDIT_DIR="${CLEAR_DIR}/audit"
 
-# Check if CLEAR is initialized
-if [ ! -d "$CLEAR_DIR" ]; then
-  # Not a CLEAR project, exit silently
-  exit 0
-fi
+# Check if CLEAR is initialized.
+# WP-CI1: tightened from `.clear/`-existence to manifest-existence — case (b)
+# `.clear/` exists but no manifest must also skip silently. Single canonical
+# helper per AC6.
+require_clear_initialized "$CWD" || exit 0
 
 # Log compaction event
 TIMESTAMP=$(date -Iseconds)

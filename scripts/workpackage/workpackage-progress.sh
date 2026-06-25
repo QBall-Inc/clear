@@ -1,7 +1,7 @@
 #!/bin/bash
 # workpackage-progress.sh - Track progress within active workpackage
 #
-# Triggered by: UserPromptSubmit hook (via user-prompt dispatcher)
+# Triggered by: PostToolUse hook (via post-tool dispatcher) on Write/Edit events.
 # Input: JSON via stdin with cwd, optional file, deliverable_id
 # Output: JSON with additionalContext (only if progress changed)
 #
@@ -61,27 +61,29 @@ else
   exit 0
 fi
 
-# Build CLI arguments
-CLI_ARGS="--clear-dir=${CLEAR_DIR}"
+# Build CLI arguments as an array so each flag is one argv token. A value such as
+# a filename with whitespace or shell metacharacters stays a single argument
+# instead of being word-split into extra (attacker-influenced) flags.
+CLI_ARGS=("--clear-dir=${CLEAR_DIR}")
 
 if [ -n "$FILE" ]; then
-  CLI_ARGS="${CLI_ARGS} --file=${FILE}"
+  CLI_ARGS+=("--file=${FILE}")
 fi
 
 if [ -n "$DELIVERABLE_ID" ]; then
-  CLI_ARGS="${CLI_ARGS} --deliverable=${DELIVERABLE_ID}"
+  CLI_ARGS+=("--deliverable=${DELIVERABLE_ID}")
 fi
 
 if [ "$COMPLETE" = "true" ]; then
-  CLI_ARGS="${CLI_ARGS} --complete"
+  CLI_ARGS+=("--complete")
 fi
 
 # Run the CLI tool
 cd "$PROJECT_ROOT" || exit
 if [ "$USE_NODE" = true ]; then
-  RESULT=$(node "$CLI_TOOL" $CLI_ARGS 2>&1)
+  RESULT=$(node "$CLI_TOOL" "${CLI_ARGS[@]}" 2>&1)
 else
-  RESULT=$(npx ts-node "$CLI_TOOL" $CLI_ARGS 2>&1)
+  RESULT=$(npx ts-node "$CLI_TOOL" "${CLI_ARGS[@]}" 2>&1)
 fi
 
 # Check if result is valid JSON

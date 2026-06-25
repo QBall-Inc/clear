@@ -13,7 +13,7 @@ Replace one knowledge entry with another. Use when a newer entry replaces an old
 ## Execution
 
 ```bash
-node "$CLEAR_PLUGIN_ROOT/build/infrastructure/knowledge/cli/supersede-cli.js" "$OLD" "$NEW" --clear-dir=.clear
+node "$CLEAR_PLUGIN_ROOT/build/infrastructure/knowledge/cli/supersede-cli.js" "$OLD" "$NEW" --clear-dir=./.clear
 ```
 
 Append `--force` if the user explicitly requests skipping confirmation.

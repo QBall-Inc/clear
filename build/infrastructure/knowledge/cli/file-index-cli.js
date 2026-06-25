@@ -27,6 +27,9 @@ function parseArgs() {
         else if (arg === '--rebuild') {
             mode = 'rebuild';
         }
+        else if (arg === '--rebuild-owner-index') {
+            mode = 'rebuild-owner-index';
+        }
         else if (arg.startsWith('--lookup=')) {
             mode = 'lookup';
             lookupPath = arg.split('=').slice(1).join('=');
@@ -53,6 +56,7 @@ function main() {
                 '',
                 'Modes (one required):',
                 '  --rebuild                    Rebuild the entire file-to-entry index',
+                '  --rebuild-owner-index        Rebuild .clear/state/owner-index.json from current SH entries (K3.4)',
                 '  --lookup=<file-path>         Look up knowledge entry IDs for a file path',
                 '  --update=<entry-id>          Update index for a specific entry',
                 '',
@@ -68,7 +72,7 @@ function main() {
         process.exit(1);
     }
     if (!args.mode) {
-        process.stderr.write('Error: one of --rebuild, --lookup=<path>, --update=<entryId> is required\n');
+        process.stderr.write('Error: one of --rebuild, --rebuild-owner-index, --lookup=<path>, --update=<entryId> is required\n');
         process.exit(1);
     }
     switch (args.mode) {
@@ -78,6 +82,19 @@ function main() {
                 status: 'rebuilt',
                 entryCount: index.entryCount,
                 fileCount: Object.keys(index.index).length,
+            });
+            process.stdout.write(output + '\n');
+            break;
+        }
+        case 'rebuild-owner-index': {
+            // K3.4 (S154) FR22: refresh owner-index.json. Caller (knowledge-load.sh)
+            // gates on file existence to preserve the lazy-build invariant — first
+            // build still happens at first SH entry create in capture-cli.ts.
+            const index = (0, file_index_1.buildOwnerIndex)(args.clearDir);
+            const output = JSON.stringify({
+                status: 'owner-index-rebuilt',
+                entryCount: index.entryCount,
+                pathCount: Object.keys(index.index).length,
             });
             process.stdout.write(output + '\n');
             break;

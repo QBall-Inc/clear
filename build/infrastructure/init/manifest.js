@@ -269,22 +269,56 @@ function addReinitEntry(manifest, reason) {
     };
 }
 /**
+ * WP-PS1 AC4: exclude backup subdirectories from createBackup recursion to
+ * prevent backup-in-backup nesting. Two prefixes covered:
+ *   - `backup_<ts>` — legacy pre-S169 convention (observed in task-tracker .clear/)
+ *   - `.backup.<ts>` — defensive against any future-nested backup pattern
+ *
+ * Basename-only check (OS-agnostic across path separators). When filter returns
+ * false for a directory, fs.cpSync skips the entire subtree.
+ */
+function shouldExcludeFromBackup(srcPath) {
+    const name = path.basename(srcPath);
+    return name.startsWith('backup_') || name.startsWith('.backup.');
+}
+/**
  * Create backup of existing .clear/ directory
  *
+ * WP-PS1 AC4: filter callback excludes any nested backup-pattern subdirectories
+ * so a `.clear/` containing legacy `backup_<ts>/` (or future `.backup.<ts>/`)
+ * subdirs produces a new `.clear.backup.<ts>/` that does NOT contain them.
+ *
+ * CR fix-batch F-LINT-3: accepts an optional explicit backupDir so callers
+ * that pre-emit the path to the user (e.g., destruction preview in
+ * initializeProject) can pass the SAME path here, guaranteeing user-visible
+ * "Backup will be created at: X" matches the actual created location. When
+ * omitted, computes a fresh ISO-8601 timestamp internally (legacy behavior).
+ *
  * @param projectDir - Project directory
+ * @param backupDir  - Optional explicit backup directory path. Must still match
+ *                     the `.clear.backup.<...>` naming convention so AC4 filter
+ *                     + discovery downstream find it.
  * @returns Path to backup directory
  * @throws Error if backup fails
  */
-function createBackup(projectDir) {
+function createBackup(projectDir, backupDir) {
     const clearDir = path.join(projectDir, '.clear');
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const backupDir = path.join(projectDir, `.clear.backup.${timestamp}`);
+    const resolvedBackupDir = backupDir ?? path.join(projectDir, `.clear.backup.${new Date().toISOString().replace(/[:.]/g, '-')}`);
     if (!fs.existsSync(clearDir)) {
         throw new Error('No .clear/ directory to backup');
     }
-    // Copy directory recursively
-    fs.cpSync(clearDir, backupDir, { recursive: true });
-    return backupDir;
+    // CR fix-batch F-SEC-3: refuse to overwrite an existing backup destination.
+    // fs.cpSync silently merges into pre-existing destinations, which would
+    // defeat the backup-as-recovery-surface contract on a millisecond-collision.
+    if (fs.existsSync(resolvedBackupDir)) {
+        throw new Error(`Backup destination already exists: ${resolvedBackupDir}`);
+    }
+    // Copy directory recursively, excluding nested backup subdirs (AC4).
+    fs.cpSync(clearDir, resolvedBackupDir, {
+        recursive: true,
+        filter: (src) => !shouldExcludeFromBackup(src),
+    });
+    return resolvedBackupDir;
 }
 /**
  * Remove existing .clear/ directory after backup

@@ -13,13 +13,13 @@ None.
 ## Execution
 
 ```bash
-RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/workpackage/cli/status-cli.js" default --clear-dir=.clear 2>/dev/null)
+RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/workpackage/cli/status-cli.js" default --clear-dir=./.clear 2>/dev/null)
 STATUS=$(echo "$RESULT" | jq -r '.status // "error"')
 if [ "$STATUS" = "error" ]; then
   ERROR=$(echo "$RESULT" | jq -r '.error // "Unknown error"')
   echo "Error: $ERROR"; exit 1
 fi
-CONTEXT=$(echo "$RESULT" | jq -r '.additionalContext // "No active workpackage"')
+CONTEXT=$(echo "$RESULT" | jq -r '.message // "No active workpackage"')
 echo "$CONTEXT"
 ```
 

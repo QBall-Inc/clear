@@ -54,14 +54,6 @@ const validator_1 = require("./validator");
  * Template metadata definitions
  */
 const TEMPLATE_METADATA = {
-    'session-handoff': {
-        name: 'session-handoff',
-        version: '1.0.0',
-        category: 'session',
-        description: 'Session handoff documentation for continuity between sessions',
-        requiredFields: ['sessionNumber', 'date', 'workpackage', 'tokensEnd', 'status', 'summary', 'completed', 'nextSteps'],
-        optionalFields: ['technicalDecisions', 'patternsEstablished', 'blockers', 'questions', 'metrics'],
-    },
     'workpackage': {
         name: 'workpackage',
         version: '1.0.0',
@@ -170,7 +162,6 @@ class TemplateEngine {
         // Pre-load all templates if caching enabled
         if (this.cacheTemplates) {
             const templateNames = [
-                'session-handoff',
                 'workpackage',
                 'technical-decision',
                 'business-rule',

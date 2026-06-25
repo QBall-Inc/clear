@@ -12,6 +12,10 @@
 import { KnowledgeEntry } from '../types';
 /**
  * Link operation result
+ *
+ * mdWritten + wpYamlWritten expose per-surface telemetry so callers
+ * (e.g., capture-cli's auto-link path — WP-PS7 phase_b AC14) can gate
+ * user-facing "(linked to Y)" messaging on all-three-surface success.
  */
 export interface LinkResult {
     success: boolean;
@@ -19,6 +23,8 @@ export interface LinkResult {
     entryId?: string;
     workpackageId?: string;
     phaseId?: string;
+    mdWritten?: boolean;
+    wpYamlWritten?: boolean;
 }
 /**
  * Unlink operation result
@@ -79,4 +85,24 @@ export declare function runUnlinkCLI(clearDir: string, entryId: string, options?
     sessionId?: string;
     sessionNumber?: number;
 }): Promise<UnlinkResult>;
+/**
+ * Back-fill result counts.
+ */
+export interface BackfillResult {
+    success: boolean;
+    output: string;
+    examined: number;
+    backfilled: number;
+    skipped: number;
+    errors: number;
+}
+/**
+ * Run the workpackage-link back-fill migration.
+ * @param clearDir - Path to .clear directory
+ * @param options - Optional session context for audit logging
+ */
+export declare function runBackfillCLI(clearDir: string, options?: {
+    sessionId?: string;
+    sessionNumber?: number;
+}): Promise<BackfillResult>;
 //# sourceMappingURL=link-cli.d.ts.map

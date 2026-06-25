@@ -176,7 +176,7 @@ function matchChangePatterns(files, cwd, toolFilter, configPath) {
                 matched: true,
                 level: 'A',
                 patternId: pattern.id,
-                message: formatMessage(pattern.message_template, matchingFiles),
+                message: formatMessage(pattern.message_template, matchingFiles, undefined, pattern),
             };
         }
     }
@@ -191,7 +191,7 @@ function matchChangePatterns(files, cwd, toolFilter, configPath) {
             matched: true,
             level: 'B',
             patternId: pattern.id,
-            message: formatMessage(pattern.message_template, matchingFiles, filtered),
+            message: formatMessage(pattern.message_template, matchingFiles, filtered, pattern),
         };
     }
     // Step 4: Level C
@@ -201,9 +201,13 @@ function matchChangePatterns(files, cwd, toolFilter, configPath) {
  * Evaluate a Level B pattern against the file list with all conditions.
  */
 function evaluateLevelB(pattern, files, toolFilter) {
-    // tool_filter check
-    if (pattern.tool_filter && toolFilter && pattern.tool_filter !== toolFilter) {
-        return false;
+    // tool_filter check — toolFilter may be comma-separated (all tools used in the
+    // turn). Pattern matches only if its required tool is among those used.
+    if (pattern.tool_filter && toolFilter) {
+        const tools = toolFilter.split(',').map(t => t.trim()).filter(Boolean);
+        if (tools.length > 0 && !tools.includes(pattern.tool_filter)) {
+            return false;
+        }
     }
     // Find matching files
     const matchingFiles = files.filter(f => matchesAnyGlob(f, pattern.paths));
@@ -300,14 +304,36 @@ function isExcluded(filePath, exclusions) {
 // HELPERS
 // ==============================================================================
 /**
- * Format a message template with file list placeholders.
+ * Format a message template with file list placeholders. For patterns with
+ * same_directory: true, {count} and {directory} reflect the populous cluster
+ * (the directory that actually triggered the min_files threshold), not the
+ * global matchingFiles count and first-file's dirname.
  */
-function formatMessage(template, matchingFiles, allFiles) {
+function formatMessage(template, matchingFiles, allFiles, pattern) {
     let msg = template;
     msg = msg.replace('{files}', matchingFiles.join(', '));
-    msg = msg.replace('{count}', String(matchingFiles.length));
-    if (matchingFiles.length > 0) {
-        msg = msg.replace('{directory}', path.dirname(matchingFiles[0]));
+    if (pattern?.same_directory && matchingFiles.length > 0) {
+        const dirCounts = new Map();
+        for (const f of matchingFiles) {
+            const dir = path.dirname(f);
+            dirCounts.set(dir, (dirCounts.get(dir) || 0) + 1);
+        }
+        let topDir = path.dirname(matchingFiles[0]);
+        let topCount = 0;
+        for (const [dir, count] of dirCounts) {
+            if (count > topCount) {
+                topDir = dir;
+                topCount = count;
+            }
+        }
+        msg = msg.replace('{count}', String(topCount));
+        msg = msg.replace('{directory}', topDir);
+    }
+    else {
+        msg = msg.replace('{count}', String(matchingFiles.length));
+        if (matchingFiles.length > 0) {
+            msg = msg.replace('{directory}', path.dirname(matchingFiles[0]));
+        }
     }
     if (allFiles) {
         msg = msg.replace('{all_files}', allFiles.join(', '));

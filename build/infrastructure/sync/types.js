@@ -143,7 +143,6 @@ function createDefaultSyncState() {
         version: '1.0',
         lastUpdated: new Date().toISOString(),
         lastFullSync: new Date().toISOString(),
-        promptsSinceSync: 0,
         session: {
             id: '',
             number: 0,
@@ -170,12 +169,6 @@ function createDefaultSyncState() {
         },
         links: {
             workpackageKnowledge: {}
-        },
-        stateHashes: {
-            session: '',
-            workpackage: '',
-            plan: '',
-            knowledge: ''
         }
     };
 }
@@ -198,14 +191,6 @@ exports.DEFAULT_AUDIT_INDEX = createDefaultAuditIndex();
  * Default cross-domain sync configuration
  */
 exports.DEFAULT_SYNC_CONFIG = {
-    sync: {
-        mode: 'on_change',
-        safetyInterval: 5,
-        changeDetection: {
-            useChecksums: true,
-            useMtime: true
-        }
-    },
     audit: {
         retentionSessions: 10,
         maxFileSizeMb: 5,

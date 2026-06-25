@@ -47,7 +47,10 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.buildSyncKnowledgeLink = buildSyncKnowledgeLink;
 exports.linkKnowledge = linkKnowledge;
+exports.propagateKnowledgeCapture = propagateKnowledgeCapture;
+exports.propagateKnowledgeLink = propagateKnowledgeLink;
 exports.unlinkKnowledge = unlinkKnowledge;
 exports.getKnowledgeByWorkpackage = getKnowledgeByWorkpackage;
 exports.getKnowledgeByPhase = getKnowledgeByPhase;
@@ -60,6 +63,37 @@ const path = __importStar(require("path"));
 const context_hub_1 = require("./context-hub");
 const audit_log_1 = require("./audit-log");
 const db_1 = require("../knowledge/db");
+const parser_1 = require("../knowledge/parser");
+// ==============================================================================
+// LINK CONSTRUCTION
+// ==============================================================================
+/**
+ * Build an active (non-deprecated) {@link KnowledgeLink} for the sync-state
+ * projection. Single source of the link shape so the constant fields
+ * (`status: 'active'`, `deprecation_type: null`) and field ordering live in one
+ * place instead of being re-spelled at every write surface. Callers resolve the
+ * systemId refs themselves and pass them in (`phaseId` is a required systemId
+ * string — `''` when none resolved, matching the sync-state default).
+ *
+ * @param params.id - Knowledge entry ID (e.g. "TD-025")
+ * @param params.workpackageId - Workpackage systemId
+ * @param params.phaseId - Phase systemId ('' when none)
+ * @param params.title - Knowledge entry title
+ * @param params.linkedAt - ISO timestamp (defaults to now)
+ * @param params.linkedBy - Link source ('auto' | 'manual' | session id; default 'auto')
+ */
+function buildSyncKnowledgeLink(params) {
+    return {
+        id: params.id,
+        workpackageId: params.workpackageId,
+        phaseId: params.phaseId,
+        title: params.title,
+        linkedAt: params.linkedAt ?? new Date().toISOString(),
+        linkedBy: params.linkedBy ?? 'auto',
+        status: 'active',
+        deprecation_type: null
+    };
+}
 // ==============================================================================
 // LINK KNOWLEDGE TO WORKPACKAGE
 // ==============================================================================
@@ -102,16 +136,14 @@ async function linkKnowledge(input) {
             };
         }
         // Create link
-        const link = {
+        const link = buildSyncKnowledgeLink({
             id: knowledgeId,
             workpackageId: targetWpSystemId,
             phaseId: targetPhaseSystemId,
             title: knowledgeTitle,
             linkedAt: timestamp,
-            linkedBy,
-            status: 'active',
-            deprecation_type: null
-        };
+            linkedBy
+        });
         // Update sync state with new link via typed mutator (avoids shallow-copy mutation)
         syncManager.addKnowledgeLink(targetWpSystemId, link);
         // Update recent entries via typed mutator
@@ -159,6 +191,93 @@ async function linkKnowledge(input) {
             error: `Link knowledge failed: ${errorMessage}`
         };
     }
+}
+// ==============================================================================
+// INTRINSIC PROPAGATION HELPERS (shared single-writer)
+// ==============================================================================
+/**
+ * Intrinsically propagate a knowledge CREATE/UPDATE to sync-state.
+ *
+ * The shared writer that makes the entrypoint (skill / hook / raw Bash) irrelevant
+ * to correctness: a mutating CLI calls this directly so its own execution leaves
+ * `sync-state.knowledge.recentEntries` coherent, instead of relying on the
+ * UserPromptSubmit hook to catch up on the NEXT prompt.
+ *
+ * Synchronous load -> mutate -> save in one tick (never holds the manager across
+ * an await). Idempotent: addRecentKnowledgeEntry dedups by id, so co-running with
+ * the hook path yields a single coherent projection. Schema-normalize happens
+ * inside SyncStateManager.load(), so this is safe on schema-divergent consumer
+ * state. Throws nothing the caller must handle — the existing mutators and save()
+ * own their error surfaces; callers fire this as a side effect.
+ *
+ * @param basePath - Project root directory
+ * @param knowledgeId - Knowledge entry ID just created/updated (e.g. "TD-025")
+ */
+function propagateKnowledgeCapture(basePath, knowledgeId) {
+    // Defense-in-depth: only project a well-formed knowledge ID into recentEntries.
+    // Both current callers pass validated/auto-generated IDs, so this never fires
+    // today; the guard keeps a future caller from polluting sync-state with a
+    // malformed ref. Reuse the canonical validator (drift-proof sourcing) rather
+    // than a parallel regex. No-op on invalid — the caller owns its primary surfaces.
+    if (!(0, parser_1.isValidId)(knowledgeId)) {
+        return;
+    }
+    const syncManager = new context_hub_1.SyncStateManager(basePath);
+    syncManager.load();
+    syncManager.addRecentKnowledgeEntry(knowledgeId);
+    syncManager.save();
+}
+/**
+ * Intrinsically propagate a knowledge->workpackage LINK to sync-state.
+ *
+ * Narrow companion to {@link propagateKnowledgeCapture} for the link surface: the
+ * caller (link-cli) keeps owning the DB + markdown frontmatter + WP-YAML surfaces
+ * and calls this last to add ONLY the sync-state projection. Lower blast radius
+ * than delegating the whole flow to {@link linkKnowledge}.
+ *
+ * Synchronous load -> mutate -> save; idempotent (addKnowledgeLink dedups by
+ * link.id). Schema-normalize in load() makes `state.links` safe even when the
+ * consumer state had no `links` key (the divergent-shape crash site).
+ *
+ * Precondition (TS-005): the floor must NOT record a semantically-invalid link.
+ * SyncStateManager.validate() rejects any link whose workpackage/phase refs are
+ * not systemIds (`wp-…` / `ph-…`), so a `""` or display-ID phaseId would surface
+ * as state corruption to the SS detection layer (debug-cli drift check +
+ * reconcile). When the link's own phase ref is absent or non-systemId, resolve
+ * it from the active phase (mirrors {@link linkKnowledge}'s
+ * `?? activePhaseSystemId` precedent); if a valid `wp-`/`ph-` pair still can't be
+ * formed, no-op rather than inject an invalid link — the caller keeps its other
+ * surfaces (DB + .md + WP-YAML).
+ *
+ * @param basePath - Project root directory
+ * @param workpackageSystemId - Target workpackage systemId
+ * @param link - The KnowledgeLink to record
+ * @returns true if the link was propagated, false if skipped as invalid
+ */
+function propagateKnowledgeLink(basePath, workpackageSystemId, link) {
+    const syncManager = new context_hub_1.SyncStateManager(basePath);
+    syncManager.load();
+    // Resolve a systemId phase: prefer the link's own phase ref, fall back to the
+    // active phase when it is absent/non-systemId (drift-proof sourcing). `plan`
+    // is a required SyncState field, so no optional chain (matches linkKnowledge).
+    let resolvedPhaseId = link.phaseId;
+    if (!resolvedPhaseId || !resolvedPhaseId.startsWith('ph-')) {
+        const activePhaseSystemId = syncManager.getState().plan.activePhaseSystemId;
+        if (activePhaseSystemId && activePhaseSystemId.startsWith('ph-')) {
+            resolvedPhaseId = activePhaseSystemId;
+        }
+    }
+    // Guard: a valid link needs systemId wp + phase refs, else validate() would
+    // flag the state as corrupt. Skip (no-op) rather than persist an invalid link.
+    if (!workpackageSystemId.startsWith('wp-') ||
+        !link.workpackageId.startsWith('wp-') ||
+        !resolvedPhaseId?.startsWith('ph-')) {
+        return false;
+    }
+    syncManager.addKnowledgeLink(workpackageSystemId, { ...link, phaseId: resolvedPhaseId });
+    syncManager.addRecentKnowledgeEntry(link.id);
+    syncManager.save();
+    return true;
 }
 /**
  * Update knowledge entry in database with workpackage/phase links (GAP-13)

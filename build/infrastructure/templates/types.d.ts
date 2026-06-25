@@ -9,7 +9,7 @@
 /**
  * Template categories supported by the system
  */
-export type TemplateCategory = 'session' | 'workpackage' | 'knowledge' | 'plan';
+export type TemplateCategory = 'workpackage' | 'knowledge' | 'plan';
 /**
  * Knowledge base template subtypes
  */
@@ -21,7 +21,7 @@ export type PlanTemplateType = 'master-plan' | 'sprint-plan';
 /**
  * All available template names
  */
-export type TemplateName = 'session-handoff' | 'workpackage' | KnowledgeTemplateType | PlanTemplateType;
+export type TemplateName = 'workpackage' | KnowledgeTemplateType | PlanTemplateType;
 /**
  * Template metadata stored in frontmatter or separately
  */
@@ -116,56 +116,6 @@ export interface BaseTemplateData {
     createdAt?: string;
     /** Last update timestamp */
     updatedAt?: string;
-}
-/**
- * Session handoff template data
- */
-export interface SessionHandoffData extends BaseTemplateData {
-    /** Session number */
-    sessionNumber: number;
-    /** Session date (YYYY-MM-DD) */
-    date: string;
-    /** Active workpackage ID */
-    workpackage: string;
-    /** Token usage percentage at end */
-    tokensEnd: number;
-    /** Session status */
-    status: 'complete' | 'partial' | 'interrupted';
-    /** Summary of session work */
-    summary: string;
-    /** Completed items with descriptions */
-    completed: Array<{
-        path: string;
-        description: string;
-    }>;
-    /** Technical decisions made */
-    technicalDecisions?: Array<{
-        decision: string;
-        reason: string;
-    }>;
-    /** Patterns established */
-    patternsEstablished?: Array<{
-        name: string;
-        description: string;
-    }>;
-    /** Next steps for following session */
-    nextSteps: string[];
-    /** Unresolved blockers */
-    blockers?: string[];
-    /** Open questions */
-    questions?: string[];
-    /** Learnings from this session */
-    learnings?: string[];
-    /** Patterns observed during this session */
-    patternsObserved?: string[];
-    /** Session metrics */
-    metrics?: {
-        productionLines?: number;
-        testLines?: number;
-        filesCreated?: number;
-        testsPassing?: number;
-        testsTotal?: number;
-    };
 }
 /**
  * Workpackage template data
@@ -506,12 +456,11 @@ export interface SprintPlanData extends BaseTemplateData {
 /**
  * Union type for all template data
  */
-export type TemplateData = SessionHandoffData | WorkpackageData | TechnicalDecisionData | BusinessRuleData | ArchitecturalPatternData | LessonsLearnedData | MasterPlanData | SprintPlanData;
+export type TemplateData = WorkpackageData | TechnicalDecisionData | BusinessRuleData | ArchitecturalPatternData | LessonsLearnedData | MasterPlanData | SprintPlanData;
 /**
  * Map template names to their data types
  */
 export interface TemplateDataMap {
-    'session-handoff': SessionHandoffData;
     'workpackage': WorkpackageData;
     'technical-decision': TechnicalDecisionData;
     'business-rule': BusinessRuleData;

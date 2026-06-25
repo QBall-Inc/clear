@@ -56,6 +56,10 @@ const parser_1 = require("./parser");
 function writeMasterPlan(cwd, plan, options = {}) {
     const { backup = false, createDirs = true } = options;
     cwd = (0, validation_1.validateBasePath)(cwd);
+    // Defense-in-depth: strip any '.clear' suffix the upstream caller may have
+    // conflated into cwd. Without this guard, master plan writes leak to
+    // `<cwd>/.clear/.clear/plans/master-plan.yaml`.
+    cwd = (0, validation_1.stripClearSuffix)(cwd, 'writeMasterPlan');
     const plansDir = path.join(cwd, '.clear', 'plans');
     const yamlPath = path.join(plansDir, 'master-plan.yaml');
     try {

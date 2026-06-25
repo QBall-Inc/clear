@@ -57,6 +57,7 @@ const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const yaml = __importStar(require("js-yaml"));
 const registry_1 = require("../workpackage/registry");
+const parser_1 = require("../workpackage/parser");
 const registry_2 = require("../plan/registry");
 const writer_1 = require("../plan/writer");
 const context_hub_1 = require("./context-hub");
@@ -94,10 +95,20 @@ function applyDisplayIdChanges(phase, changes) {
  * Load and parse the workpackage registry YAML file.
  * Centralises the repeated yaml.load() + cast pattern.
  *
+ * Domain invariant: an absent registry.yaml is indistinguishable from an empty
+ * registry — both represent zero workpackages. Tolerating absence is therefore
+ * correct domain behaviour, not a fail-fast relaxation.
+ *
  * @param registryPath - Absolute path to registry.yaml
  * @returns Parsed registry object
  */
 function loadRegistryYaml(registryPath) {
+    // A fresh plan has no registry.yaml until the first workpackage insert;
+    // tolerate its absence (mirrors parseRegistryFile in workpackage/parser.ts)
+    // so the first insert seeds the registry instead of throwing ENOENT.
+    if (!fs.existsSync(registryPath)) {
+        return { workpackages: [] };
+    }
     const content = fs.readFileSync(registryPath, 'utf-8');
     return yaml.load(content, { schema: yaml.JSON_SCHEMA });
 }
@@ -151,21 +162,90 @@ function shiftDownstreamPositions(phaseWorkpackages, insertPosition, phasePositi
     return [positionUpdates, displayIdChanges];
 }
 /**
+ * Infer a glob pattern from the file paths named in a deliverable description.
+ *
+ * Returns the single matched path when one path is found, a brace-expansion
+ * glob `{a,b}` when 2+ distinct paths are found, or empty string when none.
+ *
+ * Path detection is delegated to the shared, consumer-general extractor
+ * (extractDeliverablePaths in workpackage/parser.ts) so create-time inference
+ * and read-time resolution agree on what counts as a path across ALL project
+ * layouts (Go/Python/Rust/...), not just one fixed set of directory names.
+ * The shared extractor also carries the prose false-match guard (an alphabetic
+ * extension requirement rejects "version 1.0/2.0", "user/admin", etc.).
+ */
+function inferDeliverablePattern(description) {
+    const paths = (0, parser_1.extractDeliverablePaths)(description);
+    if (paths.length === 0) {
+        return '';
+    }
+    if (paths.length === 1) {
+        return paths[0];
+    }
+    // 2+ paths: brace-expand for a single glob that PostToolUse can match against.
+    return `{${paths.join(',')}}`;
+}
+/**
+ * Distribute weights across N deliverables so the sum is exactly 100 (AC33 POST-79).
+ *
+ * Returns floor(100/N) for each deliverable with the remainder added to the LAST one.
+ * For N=0 returns []. For N=1 returns [100]. For N=3 returns [33, 33, 34] (sum=100).
+ */
+function distributeWeights(n) {
+    if (n <= 0)
+        return [];
+    const base = Math.floor(100 / n);
+    const remainder = 100 - base * n;
+    const weights = new Array(n).fill(base);
+    weights[n - 1] = base + remainder;
+    return weights;
+}
+/**
  * Create and write a new workpackage definition file to disk.
  *
  * @param workpackagePath - Absolute path for the new YAML file
  * @param params - Workpackage properties
  */
 function createWorkpackageFile(workpackagePath, params) {
-    // Convert simple deliverable strings to structured Deliverable entries
-    // Default weight: 1 (equal weight) so calculateProgress() produces meaningful percentages
-    const deliverables = (params.deliverables_text ?? []).map((text, i) => ({
-        id: `deliverable-${i + 1}`,
-        pattern: '',
-        weight: 1,
-        status: 'not_started',
-        description: text
-    }));
+    // AC32-AC35 (POST-79): Build deliverable entries with pattern inference + weight
+    // distribution. When `deliverables_structured` is supplied (AC35 pass-through form),
+    // explicit pattern+weight values are preserved. When only `deliverables_text` is
+    // supplied (legacy form), pattern is inferred from file paths in the description
+    // text and weights are distributed via floor(100/N).
+    const useStructured = params.deliverables_structured !== undefined && params.deliverables_structured.length > 0;
+    const deliverableInputs = useStructured
+        ? params.deliverables_structured
+        : (params.deliverables_text ?? []).map(text => ({ description: text }));
+    const n = deliverableInputs.length;
+    const distributed = distributeWeights(n);
+    const deliverables = deliverableInputs.map((input, i) => {
+        const explicitPattern = input.pattern !== undefined && input.pattern !== '';
+        const explicitWeight = input.weight !== undefined;
+        const pattern = explicitPattern
+            ? input.pattern
+            : inferDeliverablePattern(input.description);
+        const weight = explicitWeight ? input.weight : distributed[i];
+        // AC34: emit Claude-actionable warning when no pattern could be inferred AND
+        // none was supplied explicitly. CLEAR runs INSIDE a Claude Code session — the
+        // audience is Claude, not a human end-user, so the remediation references the
+        // existing WP-level update-cli surface (--pattern flag) rather than advising
+        // a manual file edit. Construction continues (NOT fail-fast — Ashay S181
+        // decision for backwards-compat with existing fixtures lacking file paths).
+        if (!explicitPattern && pattern === '') {
+            const delId = `deliverable-${i + 1}`;
+            process.stderr.write(`[CLEAR] ${params.displayId} ${delId}: no file paths found in description ` +
+                `— pattern left empty (auto-promotion disabled for this deliverable). ` +
+                `To enable auto-promotion, run: \`update-cli ${params.displayId} deliverable ${delId} --pattern=<glob>\` ` +
+                `(WP-level update-cli already supports --pattern per deliverable).\n`);
+        }
+        return {
+            id: `deliverable-${i + 1}`,
+            pattern,
+            weight,
+            status: (input.status ?? 'not_started'),
+            description: input.description
+        };
+    });
     const workpackageEntry = {
         id: params.displayId,
         systemId: params.systemId,
@@ -266,19 +346,23 @@ function decrementDownstreamPositions(registryWorkpackages, phaseSystemId, defer
     return [positionUpdates, displayIdChanges];
 }
 /**
- * Update the status field inside a workpackage YAML file on disk.
- * Reads the existing YAML, modifies only the status field, and writes back
- * to preserve all other fields (NFR1: field preservation).
+ * Update the status and/or progress field inside a workpackage YAML file on disk.
+ * Reads the existing YAML, modifies the targeted field(s), and writes back to
+ * preserve all other fields (NFR1: field preservation).
  *
  * @param wpFilePath - Absolute path to the workpackage YAML file
  * @param newStatus - New status value to write
+ * @param newProgress - New progress value (0-100); omit to leave progress unchanged
  * @throws Re-throws errors so callers can log them (R4 fix: bare catch removed)
  */
-function updateWorkpackageFileStatus(wpFilePath, newStatus) {
+function updateWorkpackageFileStatus(wpFilePath, newStatus, newProgress) {
     if (fs.existsSync(wpFilePath)) {
         const wpContent = fs.readFileSync(wpFilePath, 'utf-8');
         const wpData = yaml.load(wpContent, { schema: yaml.JSON_SCHEMA });
         wpData.status = newStatus;
+        if (newProgress !== undefined) {
+            wpData.progress = newProgress;
+        }
         fs.writeFileSync(wpFilePath, yaml.dump(wpData), 'utf-8');
     }
 }
@@ -381,7 +465,7 @@ function applyPositionShift(phaseWorkpackages, workpackageSystemId, oldPosition,
  * @returns Insert result
  */
 async function insertWorkpackage(input) {
-    const { basePath, sessionId, sessionNumber, phaseSystemId, insertPosition, title, description = '', type = 'feature', priority = 'medium', acceptance_criteria, verification, notes, deliverables_text, scope_in, scope_out } = input;
+    const { basePath, sessionId, sessionNumber, phaseSystemId, insertPosition, title, description = '', type = 'feature', priority = 'medium', acceptance_criteria, verification, notes, deliverables_text, deliverables_structured, scope_in, scope_out } = input;
     const timestamp = new Date().toISOString();
     try {
         const clearDir = path.join(basePath, '.clear');
@@ -428,6 +512,7 @@ async function insertWorkpackage(input) {
             verification,
             notes,
             deliverables_text,
+            deliverables_structured,
             scope_in,
             scope_out
         });
@@ -464,11 +549,13 @@ async function insertWorkpackage(input) {
                     if (!phase.workpackages.includes(newDisplayId)) {
                         phase.workpackages.splice(insertPosition - 1, 0, newDisplayId);
                     }
-                    // Add default weight
+                    // Default weight = 1 (uniform with hand-authored sibling WPs). A larger
+                    // default would dominate phase progress arithmetic when siblings carry
+                    // weight=1, masking incomplete sibling work behind the new WP's status.
                     if (!phase.weights) {
                         phase.weights = {};
                     }
-                    phase.weights[newDisplayId] = 100;
+                    phase.weights[newDisplayId] = 1;
                     // Apply display ID changes atomically (avoids sequential collision)
                     applyDisplayIdChanges(phase, displayIdChanges);
                     (0, writer_1.writeMasterPlan)(basePath, plan);

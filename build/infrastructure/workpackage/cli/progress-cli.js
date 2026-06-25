@@ -19,6 +19,7 @@ const registry_1 = require("../registry");
 const status_cli_1 = require("./status-cli");
 const lifecycle_cli_1 = require("./lifecycle-cli");
 const parse_args_1 = require("../../cli/parse-args");
+const validation_1 = require("../../validation");
 // ==============================================================================
 // SLASH COMMAND: progress [--set N]
 // ==============================================================================
@@ -58,7 +59,7 @@ async function slashProgressCommand(registry, setProgress) {
             return {
                 success: false,
                 workpackage: active,
-                progress: active.progress ?? 0,
+                progress: registry.calculateProgress(active.id).progress,
                 message: `Invalid progress value: ${setProgress}. Must be between 0 and 100.`
             };
         }
@@ -67,29 +68,63 @@ async function slashProgressCommand(registry, setProgress) {
             return {
                 success: false,
                 workpackage: active,
-                progress: active.progress ?? 0,
+                progress: registry.calculateProgress(active.id).progress,
                 message: `Cannot update progress on ${active.status} workpackage.`
             };
         }
-        const oldProgress = active.progress ?? 0;
-        // Note: entry mutation is in-memory only (for result/display); persisted via state file below
-        active.progress = setProgress;
-        // Update state
-        const newState = {
-            ...state,
-            progress: setProgress,
-            lastActivity: new Date().toISOString()
-        };
-        registry.saveState(newState);
+        // Progress is derived from deliverable states — it is not a free-standing value
+        // that can be set to an arbitrary number. Setting an arbitrary percentage would
+        // not change any deliverable state, so it would be overwritten the next time a
+        // tracked file write recalculates progress. Only `--set 100` is meaningful: it
+        // sweeps all deliverables to complete, which is a coherent state change that
+        // recomputes to 100%.
+        if (setProgress !== 100) {
+            return {
+                success: false,
+                workpackage: active,
+                progress: registry.calculateProgress(active.id).progress,
+                message: [
+                    `Cannot set progress to ${setProgress}%. Progress is derived from deliverable states, not set directly.`,
+                    '',
+                    'To advance progress, mark deliverables done:',
+                    '  - View current deliverables:  /cf-workpackage progress',
+                    '  - Mark a deliverable complete: /cf-workpackage update <id> --status=complete',
+                    '  - Mark all deliverables complete and finish at 100%: /cf-workpackage progress --set 100',
+                ].join('\n')
+            };
+        }
+        // --set 100 derives 100% by sweeping every deliverable to complete. With no
+        // deliverables there is nothing to sweep: the recompute would stay at 0% and a
+        // "success" envelope would falsely claim the workpackage was advanced. Refuse
+        // it with the same actionable envelope shape used for `--set N≠100`.
+        if (!full?.deliverables || full.deliverables.length === 0) {
+            return {
+                success: false,
+                workpackage: active,
+                progress: registry.calculateProgress(active.id).progress,
+                message: 'Cannot set progress to 100%: this workpackage has no deliverables to complete. Progress is derived from deliverable states.'
+            };
+        }
+        // --set 100 sweeps all deliverables to complete. This is a coherent state
+        // mutation: every deliverable transitions to complete, so the recomputed
+        // aggregate progress is 100%. Each markDeliverableComplete refreshes the
+        // derived progress scalars, so no separate scalar write is needed.
+        for (const d of full.deliverables) {
+            registry.markDeliverableComplete(d.id);
+        }
+        const finalProgress = registry.calculateProgress(active.id).progress;
         return {
             success: true,
             workpackage: active,
-            progress: setProgress,
-            message: `✅ ${active.id} progress updated: ${(0, status_cli_1.formatProgress)(oldProgress)} → ${(0, status_cli_1.formatProgress)(setProgress)}`
+            progress: finalProgress,
+            message: `✅ ${active.id} progress updated: ${(0, status_cli_1.formatProgress)(finalProgress)}`
         };
     }
     // 5. View progress
-    const currentProgress = active.progress ?? state.progress ?? 0;
+    // Aggregate progress is derived from live deliverable states. Recompute it
+    // directly here so the view always reflects current truth, independent of any
+    // cached scalar in the registry index or state file.
+    const currentProgress = registry.calculateProgress(active.id).progress;
     const deliverables = [];
     if (full?.deliverables) {
         for (const d of full.deliverables) {
@@ -157,6 +192,28 @@ async function slashValidateCommand(registry) {
             message: `Active workpackage ${state.activeWorkpackage} not found in registry.`
         };
     }
+    // AC29 (POST-80): defense-in-depth on-demand progress recompute.
+    //
+    // Catches drift between state.progress and the actual deliverable YAML:
+    //   (a) hand-edits that bypass update-cli entirely
+    //   (b) crashed update-cli runs that wrote YAML but missed the AC28 recalc
+    //
+    // AC28 fixes the write path; AC29 hardens the read path. Two-layer defense
+    // so neither alone is load-bearing. Wrapped in try/catch so a recalc failure
+    // doesn't block validation (validateForCompletion can still surface its own
+    // findings based on the current state).
+    try {
+        const recomputed = registry.calculateProgress(active.id);
+        if (state.progress !== recomputed.progress) {
+            const refreshed = registry.loadState();
+            refreshed.progress = recomputed.progress;
+            refreshed.lastActivity = new Date().toISOString();
+            registry.saveState(refreshed);
+        }
+    }
+    catch (e) {
+        process.stderr.write(`[progress-cli validate] on-demand progress recompute failed (AC29 best-effort): ${e instanceof Error ? e.message : String(e)}\n`);
+    }
     // 3. Run validation
     const validation = (0, lifecycle_cli_1.validateForCompletion)(registry, active);
     return {
@@ -172,7 +229,7 @@ async function slashValidateCommand(registry) {
  * Run progress CLI slash command
  */
 async function runSlashProgressCLI(subcommand, args, options) {
-    const registry = new registry_1.WorkpackageRegistryManager(options.clearDir);
+    const registry = new registry_1.WorkpackageRegistryManager((0, validation_1.resolveClearDir)(options.clearDir).clearSubdir);
     switch (subcommand) {
         case 'progress': {
             // Check for --set flag or bare numeric positional arg (e.g. `progress 100`)
@@ -232,11 +289,12 @@ function formatScopeWarning(file, suggestedWorkpackage) {
 /**
  * Format progress update message (only shown when progress changes)
  */
-function formatProgressUpdate(workpackageId, progress, completedDeliverable) {
-    const percentage = Math.round(progress * 100);
+function formatProgressUpdate(workpackageId, progress, promotedDeliverable, promotion) {
+    const percentage = Math.round(progress);
     let message = `[${workpackageId} Progress: ${percentage}%]`;
-    if (completedDeliverable) {
-        message += ` ✅ Deliverable complete: ${completedDeliverable}`;
+    if (promotedDeliverable) {
+        const label = promotion === 'complete' ? '✅ Deliverable complete' : '🟡 Deliverable started';
+        message += ` ${label}: ${promotedDeliverable}`;
     }
     return message;
 }
@@ -244,7 +302,9 @@ function formatProgressUpdate(workpackageId, progress, completedDeliverable) {
  * Main progress tracking operation
  */
 function trackProgress(options) {
-    const registry = new registry_1.WorkpackageRegistryManager(options.clearDir);
+    // Resolve --clear-dir once for this request; resolveClearDir is idempotent + pure.
+    const { projectRoot, clearSubdir } = (0, validation_1.resolveClearDir)(options.clearDir);
+    const registry = new registry_1.WorkpackageRegistryManager(clearSubdir);
     // Get active workpackage
     const activeId = registry.getActiveWorkpackageId();
     if (!activeId) {
@@ -254,21 +314,26 @@ function trackProgress(options) {
             status: 'success'
         };
     }
+    // WP-DF3 AC2 (S167 G1+G2 fix): emit active-WP identity on every ProgressOutput
+    // so the post-tool.sh:145 jq extraction can forward systemId/displayId/title
+    // to sync-bridge handleUpdateWorkpackage. Prior to this, sync-state.workpackage
+    // title was structurally unreachable.
+    const activeEntry = registry.getWorkpackage(activeId);
+    const wpContext = activeEntry
+        ? {
+            systemId: activeEntry.systemId || activeEntry.id,
+            displayId: activeEntry.id,
+            title: activeEntry.title,
+        }
+        : {};
     const state = registry.loadState();
     const previousProgress = state.progress;
-    // If a file was specified, check scope and match to deliverable
+    // If a file was specified, match to deliverable first (auto-promotion is the canonical
+    // contract per skills/cf-workpackage/SKILL.md). Scope validation runs AFTER as advisory:
+    // a deliverable match is the strongest "in-scope" signal, and short-circuiting on scope
+    // before deliverable matching would suppress auto-promotion for any WP whose scope.in_scope
+    // contains natural-language feature descriptions (the common cf-plan/Bulwark-import shape).
     if (options.file) {
-        // Validate scope
-        const scopeResult = registry.validateScope(options.file);
-        if (!scopeResult.valid) {
-            return {
-                additionalContext: formatScopeWarning(options.file, scopeResult.suggestedWorkpackage),
-                progress: previousProgress,
-                status: 'warning',
-                scopeValid: false
-            };
-        }
-        // Try to match file to a deliverable
         const matchedDeliverable = registry.matchFileToDeliverable(options.file);
         if (matchedDeliverable && !options.deliverableId) {
             options.deliverableId = matchedDeliverable;
@@ -277,14 +342,7 @@ function trackProgress(options) {
         // Skip if --complete is set — explicit complete takes precedence over auto in_progress
         if (matchedDeliverable && !options.markComplete) {
             try {
-                const newProgress = registry.markDeliverableInProgress(matchedDeliverable);
-                if (newProgress !== previousProgress) {
-                    return {
-                        additionalContext: formatProgressUpdate(activeId, newProgress, matchedDeliverable),
-                        progress: newProgress,
-                        status: 'success'
-                    };
-                }
+                registry.markDeliverableInProgress(matchedDeliverable);
             }
             catch (error) {
                 // Non-fatal — log but continue with rest of tracking
@@ -292,9 +350,51 @@ function trackProgress(options) {
                 return {
                     progress: previousProgress,
                     status: 'warning',
-                    error: `Auto-progress failed: ${errorMsg}`
+                    error: `Auto-progress failed: ${errorMsg}`,
+                    ...wpContext
                 };
             }
+        }
+        // After the in_progress match attempt, check the deliverable the written file
+        // maps to for file-presence completion. (When the write maps to no deliverable,
+        // this resolves to a no-op — nothing to complete.) The auto-promote mechanism
+        // turns the in_progress state into complete once the deliverable's target file is
+        // on disk. Passing options.file scopes completion to that one deliverable, so a
+        // tracked write to an UNRELATED file can no longer spuriously complete a
+        // deliverable whose target happens to already exist. The global "catch-up" sweep
+        // (no writtenPath) is reserved by convention for an explicit reconcile path, not
+        // this per-write hook.
+        // projectRoot resolved once at the top of trackProgress (parent of the .clear dir).
+        const promotedToComplete = registry.checkInProgressDeliverablesForCompletion(projectRoot, options.file);
+        const lastPromoted = promotedToComplete[promotedToComplete.length - 1];
+        // Compute progress AFTER both auto-mark and sweep so the result reflects current truth.
+        const newProgress = registry.calculateProgress(activeId).progress;
+        // Scope validation (advisory). validateScope is tolerant of natural-language in_scope
+        // items — only pattern-shaped scope items trigger out-of-scope. A deliverable match
+        // suppresses the scope warning entirely (the match is the canonical in-scope signal).
+        const scopeResult = registry.validateScope(options.file);
+        const scopeWarningApplies = !scopeResult.valid && !matchedDeliverable;
+        if (newProgress !== previousProgress) {
+            const promotionLabel = lastPromoted ? 'complete' : matchedDeliverable ? 'in_progress' : undefined;
+            const progressMsg = formatProgressUpdate(activeId, newProgress, lastPromoted ?? matchedDeliverable ?? undefined, promotionLabel);
+            return {
+                additionalContext: scopeWarningApplies
+                    ? `${progressMsg}\n\n${formatScopeWarning(options.file, scopeResult.suggestedWorkpackage)}`
+                    : progressMsg,
+                progress: newProgress,
+                status: 'success',
+                ...(scopeWarningApplies ? { scopeValid: false } : {}),
+                ...wpContext
+            };
+        }
+        if (scopeWarningApplies) {
+            return {
+                additionalContext: formatScopeWarning(options.file, scopeResult.suggestedWorkpackage),
+                progress: previousProgress,
+                status: 'warning',
+                scopeValid: false,
+                ...wpContext
+            };
         }
     }
     // If marking a deliverable complete
@@ -304,9 +404,10 @@ function trackProgress(options) {
             // Only output if progress changed
             if (newProgress !== previousProgress) {
                 return {
-                    additionalContext: formatProgressUpdate(activeId, newProgress, options.deliverableId),
+                    additionalContext: formatProgressUpdate(activeId, newProgress, options.deliverableId, 'complete'),
                     progress: newProgress,
-                    status: 'success'
+                    status: 'success',
+                    ...wpContext
                 };
             }
         }
@@ -314,7 +415,8 @@ function trackProgress(options) {
             return {
                 progress: previousProgress,
                 status: 'error',
-                error: error instanceof Error ? error.message : 'Failed to mark complete'
+                error: error instanceof Error ? error.message : 'Failed to mark complete',
+                ...wpContext
             };
         }
     }
@@ -322,11 +424,12 @@ function trackProgress(options) {
     const progressResult = registry.calculateProgress(activeId);
     const currentProgress = progressResult.progress;
     // Check for 100% completion
-    if (currentProgress >= 1 && previousProgress < 1) {
+    if (currentProgress >= 100 && previousProgress < 100) {
         return {
             additionalContext: `🎉 [${activeId}] Workpackage complete! All deliverables finished.`,
             progress: currentProgress,
-            status: 'success'
+            status: 'success',
+            ...wpContext
         };
     }
     // Only output if progress changed (silent otherwise)
@@ -338,13 +441,30 @@ function trackProgress(options) {
         return {
             additionalContext: formatProgressUpdate(activeId, currentProgress),
             progress: currentProgress,
-            status: 'success'
+            status: 'success',
+            ...wpContext
         };
     }
-    // Silent return - no progress change
+    // Silent return - no progress change.
+    // WP-DF3 AC2: still emit wpContext so post-tool.sh can keep sync-state fresh
+    // even when progress didn't move (covers the mid-session WP-switch window
+    // before the first progress-changing edit on the new WP).
     return {
         progress: currentProgress,
-        status: 'success'
+        status: 'success',
+        ...wpContext
+    };
+}
+/**
+ * Apply the dual-key envelope to a result before serialization.
+ */
+function withEnvelope(result) {
+    const text = result.additionalContext ?? result.error ?? '';
+    return {
+        ...result,
+        success: result.status === 'success',
+        message: text,
+        additionalContext: text,
     };
 }
 // Main execution — only run when invoked directly
@@ -366,6 +486,13 @@ if (require.main === module) {
                 '',
                 'Common:',
                 '  --clear-dir=<path>         Path to .clear directory (default: .clear)',
+                '',
+                'Notes:',
+                '  - Hook mode auto-marks deliverables in_progress on first matching write,',
+                '    then auto-promotes to complete when description-extracted file exists on disk.',
+                '  - To revert premature promotion (e.g., stub file triggered auto-completion):',
+                '      update-cli deliverable <deliverable-id> --status=in_progress',
+                '  - `progress --set 100` sweeps all deliverables to complete (state-machine consistent).',
             ].join('\n')
         }));
         process.exit(0);
@@ -373,16 +500,17 @@ if (require.main === module) {
     try {
         const options = parseArgs();
         const result = trackProgress(options);
-        console.log(JSON.stringify(result));
+        console.log(JSON.stringify(withEnvelope(result)));
     }
     catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         const result = {
             progress: 0,
             status: 'error',
-            error: errorMessage
+            error: errorMessage,
+            additionalContext: errorMessage
         };
-        console.log(JSON.stringify(result));
+        console.log(JSON.stringify(withEnvelope(result)));
     }
 }
 //# sourceMappingURL=progress-cli.js.map

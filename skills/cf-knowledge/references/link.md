@@ -12,7 +12,7 @@ Create a link between a knowledge entry and a workpackage.
 ## Execution
 
 ```bash
-node "$CLEAR_PLUGIN_ROOT/build/infrastructure/knowledge/cli/link-cli.js" link "$ID" --to="$WP" --clear-dir=.clear
+node "$CLEAR_PLUGIN_ROOT/build/infrastructure/knowledge/cli/link-cli.js" link "$ID" --to="$WP" --clear-dir=./.clear
 ```
 
 ## Validation Rules

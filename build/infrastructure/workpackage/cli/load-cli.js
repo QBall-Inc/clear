@@ -11,11 +11,29 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const registry_1 = require("../registry");
 const parse_args_1 = require("../../cli/parse-args");
+const audit_log_1 = require("../../sync/audit-log");
+const validation_1 = require("../../validation");
 /**
  * Parse command line arguments
+ *
+ * Session-id default resolves through `getCurrentSession` from canonical sync
+ * state (`<clearDir>/state/session.json`) instead of a synthetic
+ * `session-${Date.now()}`. Synthetic IDs corrupt audit-log correlation since
+ * every emit gets a fresh timestamp suffix. Explicit `--session-id=` overrides
+ * still win via parseCliArgs.
  */
 function parseArgs() {
-    return (0, parse_args_1.parseCliArgs)({ clearDir: '.clear', sessionId: `session-${Date.now()}` }, [
+    let clearDir = './.clear';
+    for (const arg of process.argv.slice(2)) {
+        if (arg.startsWith('--clear-dir=')) {
+            clearDir = arg.substring('--clear-dir='.length);
+            break;
+        }
+    }
+    // validateBasePath rejects traversal-shaped paths before getCurrentSession
+    // touches the filesystem to read session.json.
+    const sessionDefault = (0, audit_log_1.getCurrentSession)((0, validation_1.resolveClearDir)((0, validation_1.validateBasePath)(clearDir)).clearSubdir).sessionId;
+    return (0, parse_args_1.parseCliArgs)({ clearDir: './.clear', sessionId: sessionDefault }, [
         { prefix: '--workpackage=', apply: (v, o) => { o.workpackageId = v; } },
         { prefix: '--session-id=', apply: (v, o) => { o.sessionId = v; } }
     ]);
@@ -42,7 +60,7 @@ function formatWorkpackageContext(workpackage, validation, progress) {
     lines.push(`Deliverables: ${deliverableCount} items`);
     // Progress if resuming
     if (progress > 0) {
-        lines.push(`Progress: ${Math.round(progress * 100)}%`);
+        lines.push(`Progress: ${Math.round(progress)}%`);
     }
     return lines.join('\n');
 }
@@ -72,7 +90,7 @@ function formatBlockedContext(workpackage, validation, alternatives) {
  * Main load operation
  */
 function loadWorkpackage(options) {
-    const registry = new registry_1.WorkpackageRegistryManager(options.clearDir);
+    const registry = new registry_1.WorkpackageRegistryManager((0, validation_1.resolveClearDir)(options.clearDir).clearSubdir);
     // Determine which workpackage to load
     let workpackageId = options.workpackageId;
     if (!workpackageId) {

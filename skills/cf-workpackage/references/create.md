@@ -41,7 +41,7 @@ if [ -z "$PHASE_ID" ]; then
 fi
 RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/workpackage/cli/create-cli.js" \
   --cwd="$PROJECT_DIR" --phase="$PHASE_ID" --title="<title>" 2>&1)
-echo "$RESULT" | jq -r '.additionalContext // .error // "Unknown error"'
+echo "$RESULT" | jq -r '.message // .error // "Unknown error"'
 ```
 
 If the CLI returns an error, inspect the output and inform the user with the specific error message. Do NOT retry silently.

@@ -17,6 +17,18 @@ allowed-tools:
 
 Generate or preview the session handoff document for the current CLEAR session. Captures metrics, decisions, progress, and priorities for the next session.
 
+## Plugin Root Resolution
+
+CLI commands in this skill reference `$CLEAR_PLUGIN_ROOT` — a `.claude/settings.json` env var the shell expands. The SessionStart hook persists it, but settings env vars load at session **launch**, so on a brand-new consumer's **first session** (before its next restart) the variable is empty and `node "$CLEAR_PLUGIN_ROOT/build/..."` fails with `MODULE_NOT_FOUND`.
+
+**First-session bootstrap** — if `$CLEAR_PLUGIN_ROOT` is empty, set it inline in the *same* Bash call as the CLI (each Bash call is a fresh shell, so a separate `export` would not carry over):
+
+```bash
+export CLEAR_PLUGIN_ROOT="${CLEAR_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}"
+```
+
+Prepend it to the CLI in one shell line: `export CLEAR_PLUGIN_ROOT="${CLEAR_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}"; <node "$CLEAR_PLUGIN_ROOT/build/..." command>`. `${CLAUDE_PLUGIN_ROOT}` resolves in this SKILL.md body to the actually-loaded plugin path; once the consumer restarts, `$CLEAR_PLUGIN_ROOT` is populated and the assignment is a harmless no-op.
+
 ---
 
 ## When to Use This Skill
@@ -58,14 +70,15 @@ If `$ARGUMENTS` contains `--preview`, read session state and display a preview:
 SESSION_STATE=$(cat .clear/state/session.json)
 SESSION_NUM=$(echo "$SESSION_STATE" | jq -r '.clearSessionNumber')
 TOKEN_PCT=$(echo "$SESSION_STATE" | jq -r '(.tokenUsage.estimate * 100) | floor')
-PROMPTS=$(echo "$SESSION_STATE" | jq -r '.tokenUsage.promptCount')
+CONVERSATION_TURNS=$(echo "$SESSION_STATE" | jq -r '.tokenUsage.promptCount')
 echo "Handoff Preview for Session ${SESSION_NUM}"
 echo "========================================"
-echo "Token Usage: ${TOKEN_PCT}% | Prompts: ${PROMPTS}"
+echo "Token Usage: ${TOKEN_PCT}% | Conversation Turns: ${CONVERSATION_TURNS}"
 echo ""
 echo "The handoff document will include:"
 echo "- YAML frontmatter with all metrics (to be updated)"
 echo "- Summary, Completed/In Progress items, Technical decisions"
+echo "- Patterns Established, Learnings, Patterns Observed"
 echo "- Changes this session (knowledge, plan, workpackage)"
 echo "- Code changes table, Test results, Next session priorities"
 echo ""
@@ -76,11 +89,14 @@ Stop after displaying preview.
 
 ### Branch: Generate (no --preview)
 
-**Step 1 -- Generate:** Invoke session-handoff.sh:
+**Step 1 -- Generate:** Invoke session-handoff.sh. The `$CLEAR_PLUGIN_ROOT` bootstrap
+is prepended in the *same* shell line (per Plugin Root Resolution above) so this works
+on a brand-new consumer's first session, before the settings env var has loaded:
 
 ```bash
-echo '{"session_id": "manual", "cwd": "'"$(pwd)"'", "manual": true}' | \
-  "${CLEAR_PLUGIN_ROOT}/scripts/session/session-handoff.sh"
+export CLEAR_PLUGIN_ROOT="${CLEAR_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}"; \
+  echo '{"session_id": "manual", "cwd": "'"$(pwd)"'", "manual": true}' | \
+  "$CLEAR_PLUGIN_ROOT/scripts/session/session-handoff.sh"
 ```
 
 **Step 2 -- Display result.** The script returns JSON with the document path. Show:
@@ -90,7 +106,7 @@ Handoff document generated at: .clear/sessions/session_N_YYYYMMDD.md
 
 Next steps:
 1. Update YAML frontmatter metrics (prod/test files, lines, test results, complexity, hours)
-2. Fill in markdown sections (Summary, Completed Items, Technical Decisions, Code Changes, Next Priorities)
+2. Fill in markdown sections (Summary, Completed Items, Technical Decisions, Patterns Established, Learnings, Patterns Observed, Code Changes, Next Priorities)
 3. Change status from PARTIAL to COMPLETE when done
 ```
 
@@ -108,22 +124,38 @@ The handoff uses a single YAML frontmatter block. Key fields:
 | Group | Fields |
 |-------|--------|
 | Identity | `session`, `date`, `workpackage`, `branch`, `status` (PARTIAL/COMPLETE/BLOCKED) |
-| Tokens | `tokens_pct`, `tokens_count`, `prompts` |
+| Tokens | `tokens_pct`, `tokens_count`, `conversation_turns` |
 | Code Files | `prod_files_created`, `prod_files_modified`, `test_files_created`, `test_files_modified` |
 | Lines | `lines_prod`, `lines_test`, `lines_docs` |
 | Docs | `docs_created`, `docs_modified` |
 | Tests | `tests_passed`, `tests_failed`, `tests_total` |
 | Metadata | `complexity` (simple/medium/complex), `decisions_count`, `actual_hours` |
 
+### Retrospective Sections
+
+The handoff scaffolds four retrospective sections: `## Technical Decisions`,
+`## Patterns Established`, `## Learnings`, `## Patterns Observed`.
+
+If you captured a technical decision, pattern, or learning via `/cf-knowledge` during the
+session, include its knowledge ID (e.g., `TD-N`, `PAT-N`, `LES-N`) in the handoff entry.
+Items without IDs document content in the handoff but are not registered as knowledge
+entries. `## Patterns Observed` is for in-session observations that aren't yet established
+patterns (no associated knowledge ID).
+
+Bullet format inside each section is open — fill conversationally. Leave a section's
+bullets empty if nothing applies.
+
 ### Auto-trigger Note
 
-This skill can also be triggered automatically by session-monitor.sh when token usage reaches 75%. Auto-generated documents will have placeholder values that should be updated before finalizing.
+The underlying script (`scripts/session/session-handoff.sh`) is invoked automatically by `session-monitor.sh` at the critical threshold (75% by default — configurable via `.clear/config/session-management.yaml`). This skill is the manual invocation surface for the same script — both paths produce the same handoff document. Auto-generated documents will have placeholder values that should be updated before finalizing.
 
 ### After Handoff
 
-1. Run the metrics collection script to extract metrics to CSV
-2. Commit the handoff document to version control
-3. The next session can resume using the documented priorities
+1. Finalize the handoff document — edit `.clear/sessions/session_N_<date>.md` directly via Edit (the path-allowlist carve-out permits this). Update placeholder zeros and `status: PARTIAL` → `status: COMPLETE` once the session is closed out.
+2. Commit the handoff document to version control.
+3. The next session can resume using the documented priorities.
+
+Metrics capture runs automatically at the start of the next session (`session-init.sh` scans `.clear/sessions/` for finalized handoffs and appends to `.clear/metrics/metrics.csv`). Only handoffs whose `status:` value contains `complete` (any case — `COMPLETE`, `Complete`, `completed`, etc.) are captured; partial/abandoned handoffs are ignored. One-session lag is intentional; no manual invocation required.
 
 ---
 

@@ -94,11 +94,24 @@ export declare function addReinitEntry(manifest: ClearManifest, reason: string):
 /**
  * Create backup of existing .clear/ directory
  *
+ * WP-PS1 AC4: filter callback excludes any nested backup-pattern subdirectories
+ * so a `.clear/` containing legacy `backup_<ts>/` (or future `.backup.<ts>/`)
+ * subdirs produces a new `.clear.backup.<ts>/` that does NOT contain them.
+ *
+ * CR fix-batch F-LINT-3: accepts an optional explicit backupDir so callers
+ * that pre-emit the path to the user (e.g., destruction preview in
+ * initializeProject) can pass the SAME path here, guaranteeing user-visible
+ * "Backup will be created at: X" matches the actual created location. When
+ * omitted, computes a fresh ISO-8601 timestamp internally (legacy behavior).
+ *
  * @param projectDir - Project directory
+ * @param backupDir  - Optional explicit backup directory path. Must still match
+ *                     the `.clear.backup.<...>` naming convention so AC4 filter
+ *                     + discovery downstream find it.
  * @returns Path to backup directory
  * @throws Error if backup fails
  */
-export declare function createBackup(projectDir: string): string;
+export declare function createBackup(projectDir: string, backupDir?: string): string;
 /**
  * Remove existing .clear/ directory after backup
  *

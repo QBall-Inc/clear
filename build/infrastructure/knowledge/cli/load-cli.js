@@ -45,13 +45,16 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const parse_args_1 = require("../../cli/parse-args");
+const validation_1 = require("../../validation");
 const db_1 = require("../db");
 const types_1 = require("../types");
+const slug_index_1 = require("../slug-index");
+const slug_resolver_1 = require("../slug-resolver");
 /**
  * Parse command line arguments
  */
 function parseArgs() {
-    return (0, parse_args_1.parseCliArgs)({ clearDir: '.clear', level: 'balanced', contextTags: [] }, [
+    return (0, parse_args_1.parseCliArgs)({ clearDir: './.clear', level: 'balanced', contextTags: [] }, [
         {
             prefix: '--level=',
             apply: (v, o) => {
@@ -65,7 +68,9 @@ function parseArgs() {
             prefix: '--context=',
             apply: (v, o) => { o.contextTags = v.split(',').filter(Boolean); }
         },
-        { prefix: '--workpackage=', apply: (v, o) => { o.workpackage = v; } }
+        { prefix: '--workpackage=', apply: (v, o) => { o.workpackage = v; } },
+        { prefix: '--session=', apply: (v, o) => { const n = parseInt(v, 10); if (!isNaN(n))
+                o.session = n; } }
     ]);
 }
 /**
@@ -90,7 +95,13 @@ function loadConfig(clearDir) {
     return { level: types_1.DEFAULT_KNOWLEDGE_CONFIG.loading.level };
 }
 /**
- * Load entries from JSON fallback
+ * Load entries from the JSON index export (index.json) when SQLite is unavailable.
+ *
+ * Returns the entries plus an `available` flag in a single read (no second pass):
+ * `available: true` only when index.json is present AND parseable. `available: false`
+ * means the index export could not be read — the caller uses this to emit an honest
+ * status instead of a false "no entries". index.json is a DB export, so it is absent
+ * when the database never initialized.
  */
 function loadFromJsonFallback(clearDir) {
     const jsonPath = path.join(clearDir, 'knowledge', 'index.json');
@@ -98,16 +109,34 @@ function loadFromJsonFallback(clearDir) {
         try {
             const content = fs.readFileSync(jsonPath, 'utf-8');
             const index = JSON.parse(content);
-            if (index.entries && index.entries.length > 0) {
-                return index.entries;
-            }
+            const entries = Array.isArray(index.entries) ? index.entries : [];
+            return { entries, available: true };
         }
         catch {
-            // Fall through to markdown scan
+            // index.json present but unparseable → not a readable index; fall through.
         }
     }
-    // Final fallback: scan .md files in knowledge directory
-    return scanMarkdownEntries(clearDir);
+    // No readable index export. Vestigial markdown scan retained as a last resort
+    // (note: it currently scans knowledge/ not knowledge/entries/ — a known dead path
+    // deferred to a follow-up). Availability is judged against the index export only.
+    return { entries: scanMarkdownEntries(clearDir), available: false };
+}
+/**
+ * Count knowledge entries persisted on disk (knowledge/entries/*.md). Used to tell a
+ * genuinely-empty / fresh project (nothing captured) apart from "entries exist but the
+ * index is unreadable" — only the latter is an honest no_knowledge_base condition.
+ */
+function countEntriesOnDisk(clearDir) {
+    const entriesDir = path.join(clearDir, 'knowledge', 'entries');
+    if (!fs.existsSync(entriesDir)) {
+        return 0;
+    }
+    try {
+        return fs.readdirSync(entriesDir).filter(f => f.endsWith('.md')).length;
+    }
+    catch {
+        return 0;
+    }
 }
 /**
  * Scan .md files in knowledge/ directory as last-resort fallback.
@@ -135,6 +164,9 @@ function scanMarkdownEntries(clearDir) {
             const title = getId('title') || file.replace('.md', '');
             const type = getId('type') || 'note';
             const status = getId('status') || 'active';
+            // Skip non-active entries in fallback path (mirrors DB/index filtering)
+            if (status !== 'active')
+                continue;
             const created = getId('created') || new Date().toISOString();
             // Extract first paragraph after frontmatter as description
             const bodyStart = content.indexOf('---', content.indexOf('---') + 3);
@@ -161,6 +193,21 @@ function scanMarkdownEntries(clearDir) {
                 archived_at: null,
                 deprecation_type: null,
                 superseded_at: null,
+                schema_version: 1,
+                surfaced_count: 0,
+                supersession_reviewed: false,
+                source: null,
+                source_updated: null,
+                scope: null,
+                entity_type: null,
+                role: null,
+                owns: null,
+                contact: null,
+                trigger_event: null,
+                frequency: null,
+                tools: null,
+                automation_hook: null,
+                promotion_status: null,
             });
         }
         catch {
@@ -173,7 +220,7 @@ function scanMarkdownEntries(clearDir) {
  * Calculate relevance score for an entry
  * Higher score = more relevant
  */
-function calculateRelevanceScore(entry, contextTags) {
+function calculateRelevanceScore(entry, contextTags, currentSession) {
     let score = 0;
     // Base score: active entries get priority
     if (entry.status === 'active') {
@@ -184,6 +231,14 @@ function calculateRelevanceScore(entry, contextTags) {
     }
     else if (entry.status === 'deprecated') {
         score -= 10;
+    }
+    // Grace period boost: new entries with no surfacing history get +8
+    // for the first 5 sessions after creation (overcomes cold-start problem)
+    if (currentSession != null && entry.created_session > 0) {
+        const sessionAge = currentSession - entry.created_session;
+        if (sessionAge >= 0 && sessionAge < 5) {
+            score += 8;
+        }
     }
     // Tag matches (each match adds points)
     if (contextTags.length > 0) {
@@ -215,13 +270,20 @@ function calculateRelevanceScore(entry, contextTags) {
 /**
  * Format entries for additionalContext output
  */
-function formatEntriesForContext(entries, level) {
+function formatEntriesForContext(entries, level, clearDir) {
     const config = types_1.TOKEN_LEVEL_CONFIGS[level];
     if (entries.length === 0) {
         return '[CLEAR Knowledge] No knowledge entries available.';
     }
     // Check if we should summarize (more than summary threshold)
     const shouldSummarize = entries.length > config.summaryThreshold;
+    // WP-DF2 AC4 (S166): read slug-index once per call. Detailed-mode rendering
+    // (shouldSummarize === false) below resolves [[slug-name]] refs in entry
+    // descriptions to actual entry IDs. Brief-mode skips the description so no
+    // resolution is needed. Null index → resolveSlugRefs passes text through.
+    const slugIndex = (clearDir && !shouldSummarize)
+        ? (0, slug_index_1.readSlugIndex)(clearDir)
+        : null;
     let output = `[CLEAR Knowledge] Loaded ${entries.length} entries:\n`;
     for (const entry of entries) {
         const statusIndicator = entry.status === 'active' ? '' : ` [${entry.status}]`;
@@ -233,10 +295,14 @@ function formatEntriesForContext(entries, level) {
             // Detailed format for few entries
             output += `\n### ${entry.id}: ${entry.title}${statusIndicator}\n`;
             output += `Type: ${entry.type} | Tags: ${entry.tags.join(', ')}\n`;
-            // Truncate description if too long
-            const desc = entry.description.length > 200
-                ? entry.description.substring(0, 200) + '...'
+            // WP-DF2 AC4 (S166): resolve [[slug-name]] refs in description BEFORE
+            // truncating so the entry-ID expansion is what the user sees in context.
+            const resolvedDesc = clearDir
+                ? (0, slug_resolver_1.resolveSlugRefsWithLog)(entry.description, slugIndex, clearDir, 'load-cli')
                 : entry.description;
+            const desc = resolvedDesc.length > 200
+                ? resolvedDesc.substring(0, 200) + '...'
+                : resolvedDesc;
             output += `${desc}\n`;
         }
     }
@@ -263,14 +329,22 @@ function loadKnowledge(options) {
             dbInitialized = false;
         }
     }
+    // Track whether ANY index source was readable. `indexAvailable: false` means both the
+    // DB and its JSON export are unreadable (search/load is blind) — distinct from a
+    // readable-but-empty index. The canonical index is the DB/index.json, not the vestigial
+    // markdown scan, so availability is judged against those sources.
+    let indexAvailable = false;
     if (dbInitialized) {
         try {
             entries = db.getAllEntries('active');
             db.close();
+            indexAvailable = true;
         }
         catch {
             db.close();
-            entries = loadFromJsonFallback(clearDir);
+            const fallback = loadFromJsonFallback(clearDir);
+            entries = fallback.entries;
+            indexAvailable = fallback.available;
         }
     }
     else {
@@ -279,11 +353,25 @@ function loadKnowledge(options) {
             db.close();
         }
         catch { /* ignore */ }
-        entries = loadFromJsonFallback(clearDir);
+        const fallback = loadFromJsonFallback(clearDir);
+        entries = fallback.entries;
+        indexAvailable = fallback.available;
     }
     const totalAvailable = entries.length;
-    // If no entries, return early
+    // If no entries, distinguish "index unreadable while entries exist on disk" (blind →
+    // honest no_knowledge_base) from "genuinely empty" (readable-but-empty index, OR a
+    // fresh project with nothing captured). A fresh project must NOT report unavailable.
     if (entries.length === 0) {
+        if (!indexAvailable && countEntriesOnDisk(clearDir) > 0) {
+            return {
+                success: false,
+                status: 'no_knowledge_base',
+                additionalContext: '[CLEAR Knowledge] Knowledge index unavailable — the index (SQLite database / its JSON export) could not be read, so saved entries cannot be loaded. Run /cf-debug to diagnose and get the rebuild + reindex remediation.',
+                entriesLoaded: 0,
+                level,
+                totalAvailable: 0
+            };
+        }
         return {
             success: true,
             additionalContext: '[CLEAR Knowledge] No knowledge entries available.',
@@ -295,7 +383,7 @@ function loadKnowledge(options) {
     // Score entries by relevance
     const scoredEntries = entries.map(entry => ({
         entry,
-        score: calculateRelevanceScore(entry, contextTags)
+        score: calculateRelevanceScore(entry, contextTags, options.session)
     }));
     // Sort by score (descending)
     scoredEntries.sort((a, b) => b.score - a.score);
@@ -304,7 +392,7 @@ function loadKnowledge(options) {
         .slice(0, config.maxEntries)
         .map(se => se.entry);
     // Format for output
-    const additionalContext = formatEntriesForContext(selectedEntries, level);
+    const additionalContext = formatEntriesForContext(selectedEntries, level, clearDir);
     return {
         success: true,
         additionalContext,
@@ -326,11 +414,14 @@ if (process.argv.includes('--help') || process.argv.includes('help')) {
             '                               (default: balanced, overridden by knowledge.yaml)',
             '  --context=<tags>             Comma-separated context tags for relevance filtering',
             '  --workpackage=<id>           Active workpackage ID for relevance boosting',
+            '  --session=<number>           Current session number for grace period boost',
         ].join('\n')
     }));
     process.exit(0);
 }
 const options = parseArgs();
+// Normalize to the .clear subdir, tolerant of either --clear-dir convention.
+options.clearDir = (0, validation_1.resolveClearDir)(options.clearDir).clearSubdir;
 // Override level from config if not specified on command line
 const configLevel = loadConfig(options.clearDir);
 if (!process.argv.some(arg => arg.startsWith('--level='))) {

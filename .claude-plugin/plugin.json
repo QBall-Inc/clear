@@ -1,17 +1,24 @@
 {
-  "name": "clear-framework",
-  "version": "0.1.0",
+  "name": "clear",
+  "version": "1.0.0",
   "description": "Context Layered Engineering for Agentic Resources - Persistent memory and intelligent context management for Claude Code sessions",
   "author": {
-    "name": "CLEAR Framework Team"
+    "name": "Ashay Kubal",
+    "url": "https://ashaykubal.com"
   },
-  "license": "MIT",
+  "homepage": "https://github.com/QBall-Inc",
+  "repository": "https://github.com/QBall-Inc/clear",
+  "license": "Apache-2.0",
   "keywords": [
+    "claude-code",
+    "claude-code-plugin",
     "context-management",
     "session-tracking",
     "knowledge-base",
     "workpackage",
     "automation",
-    "handoff"
+    "handoff",
+    "memory",
+    "planning"
   ]
 }

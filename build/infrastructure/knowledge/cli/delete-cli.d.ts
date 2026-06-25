@@ -29,6 +29,8 @@ export interface DeleteResult {
 export declare function runDeleteCLI(clearDir: string, entryId: string, options?: {
     reason?: string;
     force?: boolean;
+    forceMalformed?: boolean;
+    yesIMeanIt?: boolean;
     sessionId?: string;
     sessionNumber?: number;
 }): Promise<DeleteResult>;

@@ -6,14 +6,14 @@ Shows a summary of the entire knowledge base.
 
 - Total entry count
 - Breakdown by status: active, superseded, deprecated
-- Breakdown by type: TD (decisions), PAT (patterns), BR (rules), LES (lessons)
+- Breakdown by type (7 types): TD (technical-decision), BR (business-rule), PAT (architectural-pattern), LES (lesson-learned), IW (institutional-wiki), SH (stakeholder), PROC (process)
 - Recent activity
 - Index status (last rebuilt, staleness)
 
 ## Execution
 
 ```bash
-node "$CLEAR_PLUGIN_ROOT/build/infrastructure/knowledge/cli/status-cli.js" --clear-dir=.clear
+node "$CLEAR_PLUGIN_ROOT/build/infrastructure/knowledge/cli/status-cli.js" --clear-dir=./.clear
 ```
 
 ## Expected Behavior

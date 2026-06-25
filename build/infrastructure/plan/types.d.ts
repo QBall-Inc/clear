@@ -28,15 +28,17 @@ export type BlockerSeverity = 'critical' | 'high' | 'medium' | 'low';
 /**
  * Phase definition in master-plan.yaml
  *
- * Dual-ID Architecture (P1.6):
+ * Dual-ID Architecture:
  * - systemId: Immutable identifier for cross-domain references
- * - position: Order within plan, determines display ID (Phase-{position})
- * - id: Legacy display ID (e.g., "Phase-1") - kept for backward compatibility
+ * - id: Stable display ID (e.g., "Phase-1"), minted at creation and preserved
+ *   across add/delete — NOT recomputed from position
+ * - position: Order within plan (1-based), reindexed on add/delete for display order
  *
- * Display ID is calculated as Phase-{position}
+ * `id` is a stable identifier, independent of `position`. Adding or deleting a
+ * phase reindexes positions but leaves every surviving phase's display ID intact.
  */
 export interface Phase {
-    /** Legacy display ID (e.g., "Phase-1") - kept for backward compatibility */
+    /** Stable display ID (e.g., "Phase-1") — minted at creation, preserved across add/delete (not recomputed from position) */
     id: string;
     /** Immutable system ID (e.g., "ph-a1b2c3d4") - used for cross-domain references */
     systemId?: string;
@@ -44,7 +46,7 @@ export interface Phase {
     position?: number;
     name: string;
     status: PhaseStatus;
-    /** Calculated progress (0-1), persisted for YAML round-trip fidelity */
+    /** Calculated progress (0-100 percentage), persisted for YAML round-trip fidelity */
     progress?: number;
     workpackages: string[];
     weights: Record<string, number>;
@@ -77,13 +79,25 @@ export interface MasterPlan {
     milestones: Milestone[];
 }
 /**
- * Multi-signal progress data
+ * Multi-signal progress data. All signals are 0-100 percentage so the weighted
+ * sum in calculateMultiSignalProgress is unit-coherent.
+ *
+ * Intentionally session-agnostic: do NOT add a session-count / session-identity
+ * signal here. Plan progress is a function of work completed, not of how many
+ * sessions it took — "the plan didn't count the session" is correct by design.
+ * Session identity lives in the session state surfaces (session.json /
+ * sync-state.session), not in plan progress.
  */
 export interface MultiSignalData {
+    /** Workpackage progress signal (0-100 percentage) */
     workpackages: number;
+    /** Commit activity signal (0-100 percentage) */
     commits: number;
+    /** Test status signal (0-100 percentage) */
     tests: number;
+    /** Documentation coverage signal (0-100 percentage) */
     docs: number;
+    /** Integration status signal (0-100 percentage) */
     integration: number;
 }
 /**
@@ -133,7 +147,9 @@ export interface Blocker {
     blocking?: string;
     blocked?: string;
     milestone?: string;
+    /** Fraction of milestone timeline consumed (0-100 percentage) */
     timeConsumed?: number;
+    /** Average progress across milestone requirements (0-100 percentage) */
     progress?: number;
     severity: BlockerSeverity;
     description?: string;
@@ -153,15 +169,18 @@ export interface ProgressWeights {
  */
 export declare const DEFAULT_PROGRESS_WEIGHTS: ProgressWeights;
 /**
- * Milestone risk thresholds
+ * Milestone risk thresholds (0-100 percentage)
  */
 export interface RiskThresholds {
+    /** Major milestone red-flag threshold (0-100 percentage of timeline consumed) */
     majorRed: number;
+    /** Major milestone yellow-flag threshold (0-100 percentage of timeline consumed) */
     majorYellow: number;
+    /** Minor milestone yellow-flag threshold (0-100 percentage of timeline consumed) */
     minorYellow: number;
 }
 /**
- * Default risk thresholds (from plan-defaults.yaml)
+ * Default risk thresholds (0-100 percentage)
  */
 export declare const DEFAULT_RISK_THRESHOLDS: RiskThresholds;
 /**
@@ -202,9 +221,17 @@ export interface LoadInput {
     session_id?: string;
 }
 /**
- * Load CLI output
+ * Load CLI output.
+ *
+ * Dual-mode envelope: `additionalContext` is the Claude Code hook spec
+ * (consumed by plan-load.sh which pipes CLI stdout verbatim into the
+ * SessionStart hook envelope); `message` is the canonical CLI shape (read
+ * by skill jq queries). Both carry identical human-readable text so a
+ * single CLI invocation serves both surfaces without translation.
  */
 export interface LoadOutput {
+    success?: boolean;
+    message?: string;
     additionalContext?: string;
     planId?: string;
     activePhase?: string;
@@ -221,9 +248,11 @@ export interface ProgressInput {
     user_prompt?: string;
 }
 /**
- * Progress CLI output
+ * Progress CLI output. Dual envelope per LoadOutput docstring.
  */
 export interface ProgressOutput {
+    success?: boolean;
+    message?: string;
     additionalContext?: string;
     phaseProgress?: Record<string, number>;
     multiSignal?: MultiSignalData;
@@ -240,9 +269,11 @@ export interface BlockersInput {
     phase_id?: string;
 }
 /**
- * Blockers CLI output
+ * Blockers CLI output. Dual envelope per LoadOutput docstring.
  */
 export interface BlockersOutput {
+    success?: boolean;
+    message?: string;
     additionalContext?: string;
     blockers: Blocker[];
     suggestions?: string[];
@@ -254,6 +285,7 @@ export interface BlockersOutput {
  */
 export interface PhaseProgressResult {
     phaseId: string;
+    /** Aggregate phase progress (0-100 percentage) — weighted average across the phase's workpackages */
     progress: number;
     completedWorkpackages: string[];
     pendingWorkpackages: string[];
@@ -275,8 +307,10 @@ export interface MilestoneCheckResult {
  * Multi-signal calculation result
  */
 export interface MultiSignalResult {
+    /** Weighted progress across all signals (0-100 percentage) */
     weightedProgress: number;
     signals: MultiSignalData;
+    /** Confidence score 0-1 — fraction of signals that produced non-zero values */
     confidence: number;
 }
 export { generatePhaseSystemId, generateSystemIdFromLegacy, isPhaseSystemId } from '../sync/types';

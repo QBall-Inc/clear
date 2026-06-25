@@ -27,6 +27,16 @@ export type WorkpackageType = 'feature' | 'bugfix' | 'refactor' | 'documentation
  * Workpackage priority
  */
 export type WorkpackagePriority = 'critical' | 'high' | 'medium' | 'low';
+export declare const WORKPACKAGE_TYPES: WorkpackageType[];
+export declare const WORKPACKAGE_PRIORITIES: WorkpackagePriority[];
+/**
+ * Type guard: validate a string against the WorkpackageType union.
+ */
+export declare function isWorkpackageType(type: string): type is WorkpackageType;
+/**
+ * Type guard: validate a string against the WorkpackagePriority union.
+ */
+export declare function isWorkpackagePriority(priority: string): priority is WorkpackagePriority;
 /**
  * Dependency reference
  */
@@ -95,6 +105,26 @@ export interface WorkpackageEntry {
     /** Notes with source attribution (imported from Bulwark plan or cf-plan create Track B) */
     notes?: string[];
     knowledge_required?: string[];
+    /** Last-known progress (0-100). Persisted alongside status so a registry rebuild from
+     *  WP YAMLs preserves progress without requiring state-machine recomputation. */
+    progress?: number;
+    /**
+     * WP-PS7 phase_a (S188): bidirectional workpackage↔knowledge link surface.
+     * Lists knowledge entry IDs (e.g., TD-001, PAT-005) that link to this WP via
+     * link-cli or capture-cli --workpackage. Mirrors the .md frontmatter
+     * `linked_workpackages` field on the entry side; SQLite `entries.workpackage_id`
+     * remains the canonical single-value FK. Idempotent dedup on append/remove.
+     */
+    knowledge?: string[];
+    /**
+     * Non-fatal enum-validation findings surfaced by a tolerant parse. Populated
+     * ONLY when the parser is invoked with `ParseOptions { tolerantEnums: true }`
+     * AND the loaded YAML contains an invalid type or priority value. The
+     * offending raw values are still placed on `type` / `priority` so a downstream
+     * strict round-trip (e.g., pre-write check in update-cli) catches unrepaired
+     * entries. Strict callers never see this field populated.
+     */
+    validationWarnings?: string[];
 }
 /**
  * Workpackage registry entry (lightweight, for listing)
@@ -156,6 +186,7 @@ export interface WorkpackageState {
     activePhaseSystemId?: string | null;
     startedAt: string | null;
     lastActivity: string;
+    /** Active workpackage progress (0-100 percentage). Sole writer is calculateProgress via updateDeliverableAndRecalculate or progress-cli state.progress write. */
     progress: number;
     deliverables: Record<string, DeliverableState>;
     scopeWarnings: string[];
@@ -241,14 +272,27 @@ export interface ProgressInput {
     complete?: boolean;
 }
 /**
- * Progress CLI output
+ * Workpackage progress CLI output.
+ *
+ * Dual-mode envelope: `additionalContext` is the Claude Code hook spec;
+ * `message` is the canonical CLI shape (read by skill jq queries). Both
+ * carry identical human-readable text — populated by `withEnvelope` at
+ * the CLI boundary.
+ *
+ * `systemId`/`displayId`/`title` carry the active-WP identity through
+ * post-tool.sh's jq extraction into sync-bridge's handleUpdateWorkpackage.
  */
 export interface ProgressOutput {
+    success?: boolean;
+    message?: string;
     additionalContext?: string;
     progress: number;
     status: 'success' | 'warning' | 'error';
     scopeValid?: boolean;
     error?: string;
+    systemId?: string;
+    displayId?: string;
+    title?: string;
 }
 /**
  * Dependencies CLI input (from stdin via bash wrapper)
@@ -268,9 +312,16 @@ export interface DependencyStatus {
     progress?: number;
 }
 /**
- * Dependencies CLI output
+ * Dependencies CLI output.
+ *
+ * Dual-mode envelope: `additionalContext` is the Claude Code hook spec;
+ * `message` is the canonical CLI shape (read by skill jq queries). Both
+ * carry identical human-readable text — populated by `withEnvelope` at
+ * the CLI boundary.
  */
 export interface DepsOutput {
+    success?: boolean;
+    message?: string;
     additionalContext?: string;
     workpackageId: string;
     dependencies: DependencyStatus[];
@@ -300,6 +351,7 @@ export interface CircularDependencyResult {
  * Progress calculation result
  */
 export interface ProgressResult {
+    /** Progress (0-100 percentage). Integer; rounded once in calculateProgress at the sole conversion boundary. */
     progress: number;
     completedDeliverables: string[];
     pendingDeliverables: string[];
@@ -335,4 +387,25 @@ export declare function getPreferredId(entry: WorkpackageEntry | WorkpackageRegi
  * @returns true if matches P{n}.{n} pattern
  */
 export declare function isLegacyDisplayId(id: string): boolean;
+/**
+ * Format a workpackage ID for user-facing display.
+ *
+ * Counterpart to getPreferredId() — that helper is system-preferred for cross-domain
+ * references; this one is user-preferred for messages, errors, and status output.
+ *
+ * Graceful degradation: when style='both' but entry.systemId is absent (undefined or
+ * empty string — legacy WP entries pre-dating dual-ID support), the function returns
+ * just entry.id. Callers requesting 'both' receive the richest representation
+ * available without having to guard for the legacy case themselves.
+ *
+ * @param entry - Workpackage entry or registry entry (must carry .id; .systemId optional)
+ * @param style - 'display' returns just the user-facing ID (e.g. "P5.1");
+ *                'both' returns "P5.1 (wp-647a5f25)" when systemId is present,
+ *                or just "P5.1" when systemId is absent (legacy fallback)
+ * @returns Formatted ID string suitable for user-visible output
+ */
+export declare function formatWorkpackageId(entry: {
+    id: string;
+    systemId?: string;
+}, style?: 'display' | 'both'): string;
 //# sourceMappingURL=types.d.ts.map

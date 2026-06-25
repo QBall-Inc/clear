@@ -65,6 +65,7 @@ const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const yaml = __importStar(require("js-yaml"));
 const types_1 = require("../sync/types");
+const phase_id_1 = require("./phase-id");
 // ==============================================================================
 // VALIDATION
 // ==============================================================================
@@ -321,6 +322,15 @@ function transformBulwarkPlan(bulwarkPlan, enrichedDetails) {
         phases: clearPhases,
         milestones: clearMilestones
     };
+    // Root-fix: normalize milestones[].phase to the canonical phases[].id format at import
+    // time. A source plan may reference phases inconsistently (e.g. milestone phase "phase_1"
+    // against phase id "Phase-1"); copying those verbatim would orphan the milestone from its
+    // phase under the exact-match resolution every consumer uses. Normalizing here stops the
+    // drift at the source so the detectors/reconcile never have to heal imported plans.
+    // The returned correction list is intentionally discarded (hence `void`): the normalization
+    // mutates masterPlan in place and the caller persists it; surfacing the corrected-ref count
+    // is a separate import-reporting concern.
+    void (0, phase_id_1.reconcileMasterPlanPhaseRefs)(masterPlan);
     return { masterPlan, workpackageDetails };
 }
 /**

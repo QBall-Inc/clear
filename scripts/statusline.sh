@@ -149,7 +149,7 @@ if [ -n "$CWD" ] && [ -d "$CWD" ]; then
     if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         GIT_REPO=$(basename "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || echo "")
         GIT_BRANCH_NAME=$(git branch --show-current 2>/dev/null || echo "")
-        GIT_PENDING=$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+        GIT_PENDING=$(git --no-optional-locks status --porcelain 2>/dev/null | wc -l | tr -d ' ')
     fi
 fi
 

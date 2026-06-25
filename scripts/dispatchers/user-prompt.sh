@@ -12,7 +12,11 @@ source "$(cd "$(dirname "$0")" && pwd)/../lib/common.sh"
 INPUT=$(cat)
 
 # Redirect logs to project directory
-CWD=$(echo "$INPUT" | jq -r '.cwd // "."')
+CWD=$(canonicalize_cwd "$(echo "$INPUT" | jq -r '.cwd // "."')")
+
+# WP-CI1: skip on uninitialized projects.
+require_clear_initialized "$CWD" || { echo '{}'; exit 0; }
+
 use_project_logs "$CWD"
 
 # Initialize results array

@@ -14,6 +14,13 @@ export interface FileKnowledgeIndex {
     entryCount: number;
     index: Record<string, string[]>;
 }
+/** Reverse index mapping `owns` paths to stakeholder entry IDs */
+export interface OwnerIndex {
+    version: string;
+    lastBuilt: string;
+    entryCount: number;
+    index: Record<string, string[]>;
+}
 /**
  * Build the complete reverse index from all knowledge entries.
  *
@@ -46,4 +53,28 @@ export declare function updateIndex(clearDir: string, entryId: string): FileKnow
  * @returns Array of matching knowledge entry IDs
  */
 export declare function lookupFiles(clearDir: string, filePath: string): string[];
+/**
+ * Build the owner-index from all stakeholder (SH) entries.
+ *
+ * Scans .clear/knowledge/entries/, filters `type=stakeholder` with active
+ * status, reads each entry's `owns` paths (post-parseFrontmatter normalization
+ * → string[]), and builds the reverse map `{path → [SH-NNN, ...]}`.
+ *
+ * Skipped entries (silent, non-fatal):
+ *   - Non-stakeholder types
+ *   - Non-active status (pending / deprecated / superseded / archived)
+ *   - Missing or empty `owns` array
+ *
+ * Idempotent: caller invokes after first SH create AND from session-start when
+ * an existing owner-index.json is present. Atomic write (temp + rename) to
+ * mitigate the QA-flagged race when two SH entries are created in rapid
+ * succession (WP-K3.4 risk #20). Cross-session race remains theoretical and
+ * accepted post-v1.
+ *
+ * @param clearDir - Path to .clear/ directory
+ * @returns The built index (also persisted to .clear/state/owner-index.json)
+ */
+export declare function buildOwnerIndex(clearDir: string): OwnerIndex;
+/** Read the owner-index from disk, or null if not found/invalid */
+export declare function readOwnerIndex(clearDir: string): OwnerIndex | null;
 //# sourceMappingURL=file-index.d.ts.map

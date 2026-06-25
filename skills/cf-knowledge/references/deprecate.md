@@ -13,7 +13,7 @@ Mark a knowledge entry as deprecated. Use when an entry is no longer relevant an
 ## Execution
 
 ```bash
-node "$CLEAR_PLUGIN_ROOT/build/infrastructure/knowledge/cli/deprecate-cli.js" "$ID" --reason="$REASON" --clear-dir=.clear
+node "$CLEAR_PLUGIN_ROOT/build/infrastructure/knowledge/cli/deprecate-cli.js" "$ID" --reason="$REASON" --clear-dir=./.clear
 ```
 
 Append `--force` if the user explicitly requests skipping confirmation.

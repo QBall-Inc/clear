@@ -20,6 +20,7 @@
  * - persist:            Save current sync-state to disk (flush dirty state)
  * - load:               Load sync-state from disk, output as JSON
  * - reconcile:          Detect and correct stale knowledge links at session start
+ * - reconcile-knowledge: Rebuild the denormalized knowledge cache from source-of-truth (recovery)
  * - reconcile-plan:     Detect and correct plan/WP state drift at session start
  *
  * Usage: node sync-bridge-cli.js --clear-dir=<path> --op=<operation> [--data=<json>]
@@ -63,17 +64,23 @@ const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const yaml = __importStar(require("js-yaml"));
 const parse_args_1 = require("../../cli/parse-args");
+const validation_1 = require("../../validation");
 const context_hub_1 = require("../context-hub");
 const knowledge_linker_1 = require("../knowledge-linker");
 const db_1 = require("../../knowledge/db");
 const audit_log_1 = require("../audit-log");
 const parser_1 = require("../../workpackage/parser");
+const registry_1 = require("../../workpackage/registry");
 const parser_2 = require("../../plan/parser");
 const writer_1 = require("../../plan/writer");
-const registry_1 = require("../../plan/registry");
+const registry_2 = require("../../plan/registry");
+const phase_id_1 = require("../../plan/phase-id");
+const plan_rollup_1 = require("../plan-rollup");
 // ==============================================================================
 // CONSTANTS
 // ==============================================================================
+// Typed Sets so a future addition to WorkpackageStatus or SessionSummary['status']
+// produces a compile error if not also added here (STD-001 / TS-2 / TS-3 fix).
 const VALID_WP_STATUSES = new Set([
     'not_started', 'in_progress', 'paused', 'blocked', 'complete', 'deferred', 'archived',
 ]);
@@ -82,13 +89,18 @@ const VALID_WP_STATUSES = new Set([
 // ==============================================================================
 const DISPATCH_MAP = {
     'update-workpackage': handleUpdateWorkpackage,
+    'update-session': handleUpdateSession,
     'update-knowledge': handleUpdateKnowledge,
     'link-knowledge': handleLinkKnowledge,
     'persist': handlePersist,
     'load': handleLoad,
     'reconcile': handleReconcile,
+    'reconcile-knowledge': handleReconcileKnowledge,
     'reconcile-plan': handleReconcilePlan,
 };
+// Typed against SessionSummary['status'] so the Set cannot silently drift from
+// the SessionSummary union (STD-001 / TS-3 fix).
+const VALID_SESSION_STATUSES = new Set(['active', 'ending', 'complete']);
 // ==============================================================================
 // OPERATION HANDLERS
 // ==============================================================================
@@ -102,11 +114,15 @@ async function handleUpdateWorkpackage(manager, opts) {
     if (!data) {
         return { success: false, op: 'update-workpackage', error: 'Invalid or missing --data JSON' };
     }
-    const hasFields = data.displayId !== undefined || data.title !== undefined || data.progress !== undefined || data.status !== undefined;
+    // WP-DF3 AC2 (S167 G1+G2 fix): systemId added to the accepted field set so the
+    // upstream ProgressOutput pipeline can populate WorkpackageSummary.systemId —
+    // previously unreachable because ProgressOutput lacked the field entirely.
+    const hasFields = data.systemId !== undefined || data.displayId !== undefined || data.title !== undefined || data.progress !== undefined || data.status !== undefined;
     if (!hasFields) {
         return { success: true, op: 'update-workpackage', updated: false, reason: 'No workpackage fields in data' };
     }
     manager.updateWorkpackageSummary({
+        ...(typeof data.systemId === 'string' ? { systemId: data.systemId } : {}),
         ...(typeof data.displayId === 'string' ? { displayId: data.displayId } : {}),
         ...(typeof data.title === 'string' ? { title: data.title } : {}),
         ...(typeof data.progress === 'number' ? { progress: data.progress } : {}),
@@ -162,6 +178,50 @@ async function handleLinkKnowledge(manager, opts) {
     };
 }
 /**
+ * Update session summary in sync-state. (WP-DF3 AC5 / S167 G3 fix)
+ *
+ * Prior to this op, SessionSummary fields were populated only by session-sync.ts
+ * `syncSession()` — a function defined but never called from any production
+ * site. As a result, sync-state.session was perpetually defaulted to
+ * `{id:"", number:0, tokensUsed:0, status:"active"}` regardless of session
+ * lifecycle. This op exposes the same writer surface that handleUpdateWorkpackage
+ * uses, so session-init.sh and session-monitor.sh can refresh the session block
+ * on lifecycle events.
+ *
+ * Expects --data with JSON containing any subset of:
+ *   id (string), number (number), tokensUsed (number), status ('active'|'ending'|'complete').
+ * Fields with the wrong type are silently dropped (matches handleUpdateWorkpackage pattern).
+ */
+async function handleUpdateSession(manager, opts) {
+    const data = parseDataArg(opts.data);
+    if (!data) {
+        return { success: false, op: 'update-session', error: 'Invalid or missing --data JSON' };
+    }
+    const hasFields = data.id !== undefined
+        || data.number !== undefined
+        || data.tokensUsed !== undefined
+        || data.status !== undefined;
+    if (!hasFields) {
+        return { success: true, op: 'update-session', updated: false, reason: 'No session fields in data' };
+    }
+    manager.updateSessionSummary({
+        ...(typeof data.id === 'string' ? { id: data.id } : {}),
+        ...(typeof data.number === 'number' ? { number: data.number } : {}),
+        ...(typeof data.tokensUsed === 'number' ? { tokensUsed: data.tokensUsed } : {}),
+        ...(typeof data.status === 'string' && VALID_SESSION_STATUSES.has(data.status)
+            ? { status: data.status }
+            : {}),
+    });
+    if (manager.isDirty()) {
+        manager.save();
+    }
+    return {
+        success: true,
+        op: 'update-session',
+        updated: true,
+    };
+}
+/**
  * Update knowledge summary in sync-state.
  * Expects --data with JSON containing knowledge capture result:
  *   entryId (string), pendingCaptures (number).
@@ -190,13 +250,13 @@ async function handleUpdateKnowledge(manager, opts) {
 }
 /**
  * Persist (flush) current sync-state to disk.
- * Updates state hashes before saving.
  */
 async function handlePersist(manager, opts) {
     void opts;
-    const hashes = manager.calculateStateHashes();
-    manager.updateStateHashes(hashes);
-    manager.incrementPromptCounter();
+    // Record a full-sync timestamp on every persist op so sync-state.lastFullSync
+    // reflects the last flush to disk. The Stop hook fires persist once per
+    // session, so this is the cadence users observe for "last full sync".
+    manager.recordFullSync();
     const saved = manager.save();
     return {
         success: saved,
@@ -343,6 +403,72 @@ async function handleReconcile(manager, opts) {
     };
 }
 /**
+ * reconcile-knowledge: REBUILD the denormalized knowledge cache in sync-state
+ * (knowledge.recentEntries + links.workpackageKnowledge) from the knowledge
+ * database — the materialized source-of-truth. Recovery path for the drift where
+ * the cache goes empty/stale while the DB holds the real entries (the empty
+ * "Recent Knowledge" dashboard panel despite captured entries).
+ *
+ * Distinct from --op=reconcile, which only PRUNES stale links. Backs up
+ * sync-state before persisting any change (reuses the Check-3 backup pattern),
+ * and is idempotent — a coherent cache rebuilds to itself with no save and no
+ * backup. An empty DB rebuilds the cache to an empty-but-valid projection.
+ *
+ * Called on demand (e.g. by cf-debug's actionable rebuild hint when the drift
+ * check fires). Logs nothing to audit/ — the backup file is the recovery record.
+ */
+async function handleReconcileKnowledge(manager, opts) {
+    // opts.clearDir is the project root; KnowledgeDatabase expects the .clear subdir
+    const clearDir = path.join(opts.clearDir, '.clear');
+    const db = new db_1.KnowledgeDatabase(clearDir);
+    if (!db.initialize()) {
+        return {
+            success: true,
+            op: 'reconcile-knowledge',
+            status: 'no_db',
+            rebuilt: false,
+            message: 'Knowledge database not available — skipping rebuild',
+        };
+    }
+    const errors = [];
+    try {
+        const sources = db.getAllEntries().map(entry => ({
+            id: entry.id,
+            title: entry.title,
+            created: entry.created,
+            status: entry.status,
+            workpackageId: entry.workpackage_id,
+            phaseId: entry.phase_id,
+            deprecationType: entry.deprecation_type,
+        }));
+        const counts = manager.rebuildKnowledgeCache(sources);
+        // Capture the change decision BEFORE save() clears the dirty flag. Only back
+        // up + persist when the rebuild actually changed the cache, so a coherent
+        // store is a true no-op (no backup churn — idempotency).
+        const rebuilt = manager.isDirty();
+        let backupPath = null;
+        if (rebuilt) {
+            backupPath = backupSyncStateBeforeReconcile(clearDir, errors, 'reconcile-knowledge');
+            manager.save();
+        }
+        return {
+            success: true,
+            op: 'reconcile-knowledge',
+            status: rebuilt ? 'rebuilt' : 'ok',
+            rebuilt,
+            entriesConsidered: counts.entries,
+            recentEntries: counts.recent,
+            workpackageGroups: counts.workpackages,
+            linksRebuilt: counts.links,
+            ...(backupPath ? { backup: path.basename(backupPath) } : {}),
+            ...(errors.length > 0 ? { errors } : {}),
+        };
+    }
+    finally {
+        db.close();
+    }
+}
+/**
  * reconcile-plan: Detect and correct plan/WP state drift at session start.
  *
  * Three independent checks, each fire-and-log (failure in one does not block others):
@@ -371,6 +497,10 @@ async function handleReconcilePlan(manager, opts) {
     const wpBaseDir = path.resolve(path.join(clearDir, 'workpackages'));
     const check1Corrections = reconcileCheck1_RegistryVsWpYaml(registryPath, wpBaseDir, corrections, errors);
     const check2Corrections = reconcileCheck2_MasterPlanVsRegistry(masterPlanPath, registryPath, opts.clearDir, clearDir, corrections, errors);
+    // Check 4 runs BEFORE Check 3: it normalizes master-plan phase references (the SOT) and
+    // re-derives plan.json, so Check 3 then propagates the corrected activePhaseId to
+    // sync-state.activePhaseDisplayId.
+    const check4Corrections = reconcileCheck4_PhaseReferentialIntegrity(masterPlanPath, opts.clearDir, clearDir, corrections, errors);
     reconcileCheck3_SyncStateVsStateFiles(clearDir, manager, corrections, errors);
     return {
         success: true,
@@ -379,6 +509,7 @@ async function handleReconcilePlan(manager, opts) {
         check1Corrections,
         check2Corrections,
         check3Corrections: corrections.filter(c => c.check === 3).length,
+        check4Corrections,
         status: corrections.length === 0 ? 'ok' : 'corrected',
         details: corrections.length > 0 ? corrections : undefined,
         errors: errors.length > 0 ? errors : undefined,
@@ -505,7 +636,7 @@ function reconcileCheck2_MasterPlanVsRegistry(masterPlanPath, registryPath, proj
                 return count;
             }
             // Re-derive plan.json — clear cache and re-initialize state
-            const planRegistry = new registry_1.PlanRegistryManager(clearDir);
+            const planRegistry = new registry_2.PlanRegistryManager(clearDir);
             planRegistry.initializeState('reconcile-plan');
         }
     }
@@ -513,6 +644,127 @@ function reconcileCheck2_MasterPlanVsRegistry(masterPlanPath, registryPath, proj
         errors.push(`Check 2 failed: ${e instanceof Error ? e.message : 'Unknown error'}`);
     }
     return count;
+}
+/**
+ * Check 4: master-plan phase-reference format integrity.
+ * Display-id references (milestones[].phase, activePhase) that are FORMAT variants of an
+ * existing phases[].id ("phase_1" vs "Phase-1") are normalized to the canonical id; the
+ * phases[].id values are the source of truth and are never changed. Projected surfaces
+ * (plan.json activePhaseId, sync-state activePhaseDisplayId) follow via the plan re-derive
+ * below + Check 3. Shares reconcileMasterPlanPhaseRefs() with debug-cli --check-ids/--repair
+ * so detection and correction use one definition. Does NOT touch reconcileCheck1's
+ * registry-vs-WP status correction.
+ */
+function reconcileCheck4_PhaseReferentialIntegrity(masterPlanPath, projectRoot, clearDir, corrections, errors) {
+    try {
+        if (!fs.existsSync(masterPlanPath))
+            return 0;
+        const plan = (0, parser_2.parseMasterPlanYaml)(masterPlanPath);
+        if (!plan)
+            return 0;
+        // (1) Normalize the master-plan SOT (milestones[].phase + activePhase format variants).
+        const sot = applyMasterPlanPhaseRefCorrections(plan, projectRoot, corrections, errors);
+        if (!sot.ok)
+            return 0; // master-plan write failed — do NOT re-derive from an uncorrected SOT
+        // (2) Detect plan.json projection drift independently (the SOT may already be canonical
+        //     while the projection lags). Both feed the single re-derive below.
+        const projectionDrift = checkPlanStateProjectionDrift(clearDir, plan, corrections);
+        if (sot.needReDerive || projectionDrift) {
+            // Re-derive plan.json so its activePhaseId follows the corrected master-plan SOT.
+            // Check 3 (after this) then propagates the corrected id to sync-state.activePhaseDisplayId.
+            new registry_2.PlanRegistryManager(clearDir).initializeState('reconcile-plan');
+        }
+        return sot.count + (projectionDrift ? 1 : 0);
+    }
+    catch (e) {
+        errors.push(`Check 4 failed: ${e instanceof Error ? e.message : 'Unknown error'}`);
+        return 0;
+    }
+}
+/**
+ * Normalize format-variant phase references in the master-plan SOT and write it back.
+ * backup:true writes a .bak sibling before overwriting the consumer's primary plan file.
+ * Returns the correction count, whether plan.json must be re-derived, and ok=false when the
+ * write failed (the caller aborts so it never re-derives from an uncorrected SOT).
+ */
+function applyMasterPlanPhaseRefCorrections(plan, projectRoot, corrections, errors) {
+    const refCorrections = (0, phase_id_1.reconcileMasterPlanPhaseRefs)(plan);
+    if (refCorrections.length === 0) {
+        return { count: 0, needReDerive: false, ok: true };
+    }
+    const writeResult = (0, writer_1.writeMasterPlan)(projectRoot, plan, { backup: true });
+    if (writeResult.status === 'error') {
+        errors.push(`Check 4: writeMasterPlan failed: ${writeResult.error}`);
+        return { count: 0, needReDerive: false, ok: false };
+    }
+    for (const c of refCorrections) {
+        corrections.push({
+            check: 4,
+            field: `plan.${c.field}`,
+            oldValue: c.oldValue,
+            newValue: c.newValue,
+        });
+    }
+    return { count: refCorrections.length, needReDerive: true, ok: true };
+}
+/**
+ * Detect plan.json projection drift: a plan.json activePhaseId that is a FORMAT variant of an
+ * existing phases[].id while the master-plan SOT is already canonical. Records the correction
+ * and returns true when found (the caller re-derives plan.json once for all of Check 4).
+ */
+function checkPlanStateProjectionDrift(clearDir, plan, corrections) {
+    const planStatePath = path.join(clearDir, 'state', 'plan.json');
+    if (!fs.existsSync(planStatePath))
+        return false;
+    try {
+        const raw = JSON.parse(fs.readFileSync(planStatePath, 'utf-8'));
+        if (typeof raw !== 'object' || raw === null)
+            return false;
+        const activePhaseId = raw.activePhaseId;
+        if (typeof activePhaseId !== 'string' || !activePhaseId)
+            return false;
+        const res = (0, phase_id_1.resolvePhaseRef)(activePhaseId, plan.phases.map(p => p.id));
+        if (res.status === 'format-variant' && res.canonical) {
+            corrections.push({
+                check: 4,
+                field: 'plan.json activePhaseId',
+                oldValue: activePhaseId,
+                newValue: res.canonical,
+            });
+            return true;
+        }
+    }
+    catch {
+        // malformed plan.json is reported/handled elsewhere; skip the projection re-derive
+    }
+    return false;
+}
+/**
+ * Back up sync-state.json before a reconciliation mutates it, so the change is
+ * reversible. Writes a sibling `sync-state.bak-<timestamp>.json` and returns its
+ * path, or null if the source is missing or the copy fails. Failure is logged and
+ * non-fatal: reconciliation is best-effort per the Check 3 contract, and a failed
+ * backup must not abort the reconcile (a stale dashboard is worse than a missing
+ * backup file). The on-disk sync-state is still pristine at call time — the manager
+ * mutates in memory and only persists once at the end of the reconcile — so the
+ * backup captures the true pre-reconciliation state.
+ */
+function backupSyncStateBeforeReconcile(clearDir, errors, context = 'Check 3') {
+    try {
+        const src = path.join(clearDir, 'state', 'sync-state.json');
+        if (!fs.existsSync(src))
+            return null;
+        const ts = new Date().toISOString().replace(/[:.]/g, '-');
+        const dest = path.join(clearDir, 'state', `sync-state.bak-${ts}.json`);
+        fs.copyFileSync(src, dest);
+        return dest;
+    }
+    catch (e) {
+        // `context` labels the calling operation so a backup failure is attributed
+        // to the right caller (the helper is shared across reconcile paths).
+        errors.push(`${context} sync-state backup failed: ${e instanceof Error ? e.message : 'Unknown error'}`);
+        return null;
+    }
 }
 /**
  * Check 3: Sync-state.json WP/plan summaries vs actual state files.
@@ -524,25 +776,89 @@ function reconcileCheck3_SyncStateVsStateFiles(clearDir, manager, corrections, e
         const wpStatePath = path.join(clearDir, 'state', 'workpackage.json');
         if (fs.existsSync(wpStatePath)) {
             const raw = JSON.parse(fs.readFileSync(wpStatePath, 'utf-8'));
+            const rawObj = typeof raw === 'object' && raw !== null ? raw : {};
+            // Hoist to a const local so the `typeof === 'string'` narrowing below
+            // survives the intervening corrections.push / manager.update* calls
+            // (property-access narrowing on rawObj would reset after each call).
+            const activeWorkpackage = rawObj.activeWorkpackage;
             const syncWpSummary = manager.getWorkpackageSummary();
             // F-06 fix: runtime type guards on parsed JSON
-            if (typeof raw.activeWorkpackage === 'string' && syncWpSummary.displayId !== raw.activeWorkpackage) {
+            if (typeof activeWorkpackage === 'string' && syncWpSummary.displayId !== activeWorkpackage) {
                 corrections.push({
                     check: 3,
                     field: 'sync.workpackage.displayId',
                     oldValue: syncWpSummary.displayId,
-                    newValue: raw.activeWorkpackage,
+                    newValue: activeWorkpackage,
                 });
-                manager.updateWorkpackageSummary({ displayId: raw.activeWorkpackage });
+                manager.updateWorkpackageSummary({ displayId: activeWorkpackage });
             }
-            if (typeof raw.progress === 'number' && syncWpSummary.progress !== raw.progress) {
+            // Progress repair sources from the registry (authoritative), NOT from
+            // workpackage.json. state/workpackage.json.progress is structurally
+            // active-WP-only and goes stale the moment a WP is completed or
+            // deactivated, so repairing the snapshot FROM it is a no-op exactly when
+            // it matters (both read 0 for a deactivated-but-complete WP). The registry
+            // derives progress from live deliverable states and falls back to the
+            // per-WP YAML 'complete' statuses, yielding the true value (e.g. 100) even
+            // when workpackage.json has been reset. Scope to a legitimately-active WP
+            // (workpackage.json reports a string activeWorkpackage) so this repair can
+            // never resurrect a deactivated block — the null-active-clear branch below
+            // is the authoritative outcome for that case, and the `string` guard here
+            // is the exact complement of its `!= string` guard.
+            if (typeof activeWorkpackage === 'string') {
+                try {
+                    const registry = new registry_1.WorkpackageRegistryManager(clearDir);
+                    // Only repair from a workpackage that actually exists in the registry.
+                    // calculateProgress() returns a {progress:0} fallback for an unknown id,
+                    // so an orphaned activeWorkpackage (its registry entry deleted/renamed)
+                    // would otherwise push a spurious progress->0 "correction". Route the
+                    // not-found case to errors[] instead of writing a false 0.
+                    if (!registry.getWorkpackage(activeWorkpackage)) {
+                        errors.push(`Check 3 progress repair skipped: active workpackage '${activeWorkpackage}' not found in registry`);
+                    }
+                    else {
+                        const registryProgress = registry.calculateProgress(activeWorkpackage).progress;
+                        if (syncWpSummary.progress !== registryProgress) {
+                            corrections.push({
+                                check: 3,
+                                field: 'sync.workpackage.progress',
+                                oldValue: String(syncWpSummary.progress),
+                                newValue: String(registryProgress),
+                            });
+                            manager.updateWorkpackageSummary({ progress: registryProgress });
+                        }
+                    }
+                }
+                catch (e) {
+                    // A registry read failure must not abort the reconcile; a stale
+                    // progress scalar is recoverable on the next session start.
+                    errors.push(`Check 3 registry progress read failed: ${e instanceof Error ? e.message : 'Unknown error'}`);
+                }
+            }
+            // Null-active clear: workpackage.json is the source of truth for which WP is
+            // active. When it reports NO active workpackage (activeWorkpackage is not a
+            // string — null, absent, or any non-string value) but the sync-state still pins
+            // a non-empty workpackage block, that block is stale: a completed or cleared WP
+            // whose roll-over never reached sync-state. The session-start dashboard would
+            // render it as a phantom active WP. The clear-on-complete path empties the block
+            // on new completions; this is the session-start safety net that also reconciles a
+            // pre-existing stale block. Reconcile by clearing from the authoritative source,
+            // backing up sync-state first so the operation is reversible. The `!= string`
+            // guard is the exact complement of the string-typed reconciliation above, so the
+            // two branches are mutually exclusive. Require a non-empty block so an
+            // already-clear state is a no-op (no spurious correction, no backup churn, idempotent).
+            const noActiveWorkpackage = typeof activeWorkpackage !== 'string';
+            const blockIsNonEmpty = syncWpSummary.systemId !== '' || syncWpSummary.displayId !== '';
+            if (noActiveWorkpackage && blockIsNonEmpty) {
+                const backupPath = backupSyncStateBeforeReconcile(clearDir, errors);
                 corrections.push({
                     check: 3,
-                    field: 'sync.workpackage.progress',
-                    oldValue: String(syncWpSummary.progress),
-                    newValue: String(raw.progress),
+                    field: 'sync.workpackage (cleared — workpackage.json has no active workpackage)',
+                    oldValue: syncWpSummary.displayId || syncWpSummary.systemId,
+                    newValue: backupPath
+                        ? `cleared (backup: ${path.basename(backupPath)})`
+                        : 'cleared',
                 });
-                manager.updateWorkpackageSummary({ progress: raw.progress });
+                manager.clearActiveWorkpackage();
             }
         }
         // Check plan summary against plan.json
@@ -568,6 +884,52 @@ function reconcileCheck3_SyncStateVsStateFiles(clearDir, manager, corrections, e
                 });
                 manager.updatePlanSummary({ activePhaseSystemId: raw.activePhaseSystemId });
             }
+            // WP-PL8 light-(b): belt-and-suspenders systemId backfill. The dashboard
+            // now keys "(no plan loaded)" off the always-present activePhaseDisplayId,
+            // so an empty systemId no longer hides a healthy plan. Keep the optional
+            // systemId coherent when it IS resolvable: if plan.json carried no systemId
+            // (null/absent → the string-copy above was skipped) yet the active phase
+            // has a systemId in the authoritative master-plan.yaml, populate it. If
+            // master-plan.yaml also lacks a systemId for the phase, this is a no-op —
+            // the plan genuinely has none, which is valid. Idempotent: once sync-state
+            // holds the systemId, this guard (=== '') is false on subsequent sessions.
+            // Best-effort match by display- or system-id (whichever plan.json stored);
+            // a normalization miss simply leaves it empty (the renderer copes).
+            // LOAD-BEARING re-read: getPlanSummary() returns a fresh COPY of state.plan
+            // (`{ ...this.state.plan }`), so the snapshot captured above (syncPlanSummary)
+            // does NOT reflect the string-copy mutation at the activePhaseSystemId branch.
+            // Re-reading here makes this guard skip when plan.json already supplied a real
+            // systemId — using the stale snapshot would re-enter and push a spurious second
+            // correction over the value just set. Do not "simplify" to the snapshot.
+            if (manager.getPlanSummary().activePhaseSystemId === '' &&
+                typeof raw.activePhaseId === 'string' &&
+                raw.activePhaseId !== '') {
+                // Isolated try/catch: parseMasterPlanYaml throws (PlanParseError) on a
+                // malformed master-plan.yaml. This backfill is best-effort and MUST NOT
+                // destabilize the load-bearing WP/plan reconcile above — a throw here
+                // would otherwise abort Check 3 before manager.save() and silently drop
+                // every correction computed this pass. Swallow + record, never rethrow.
+                try {
+                    const masterPlanPath = path.join(clearDir, 'plans', 'master-plan.yaml');
+                    if (fs.existsSync(masterPlanPath)) {
+                        const masterPlan = (0, parser_2.parseMasterPlanYaml)(masterPlanPath);
+                        const resolvedPhase = masterPlan?.phases.find(p => p.id === raw.activePhaseId ||
+                            (p.systemId !== undefined && p.systemId === raw.activePhaseId));
+                        if (resolvedPhase?.systemId) {
+                            corrections.push({
+                                check: 3,
+                                field: 'sync.plan.activePhaseSystemId (backfilled from master-plan.yaml)',
+                                oldValue: '',
+                                newValue: resolvedPhase.systemId,
+                            });
+                            manager.updatePlanSummary({ activePhaseSystemId: resolvedPhase.systemId });
+                        }
+                    }
+                }
+                catch (e) {
+                    errors.push(`Check 3 systemId backfill skipped: ${e instanceof Error ? e.message : 'Unknown error'}`);
+                }
+            }
             if (typeof raw.activePhaseId === 'string' && raw.phaseProgress && typeof raw.phaseProgress === 'object') {
                 const actualProgress = typeof raw.phaseProgress[raw.activePhaseId] === 'number'
                     ? raw.phaseProgress[raw.activePhaseId] : 0;
@@ -579,6 +941,40 @@ function reconcileCheck3_SyncStateVsStateFiles(clearDir, manager, corrections, e
                         newValue: String(actualProgress),
                     });
                     manager.updatePlanSummary({ phaseProgress: actualProgress });
+                }
+            }
+            // WP-DF3 AC5 (S167 G8 fix): mirror blockers from plan.json into sync-state.
+            // Session-start safety net — if blockers-cli ran between sessions and
+            // plan-rollup didn't catch up before session end, this reconciles the
+            // sync-state mirror. The structured Blocker[] is flattened to string[]
+            // matching the sync-state schema (description if set, else type:subject).
+            if (Array.isArray(raw.blockers)) {
+                // STD-001 + LINT-03 cross-role fix: use the shared formatBlockerForSyncState
+                // from plan-rollup.ts instead of an inline duplicate. The raw JSON shape
+                // (Record<string, unknown> from JSON.parse) is adapted to the typed
+                // Blocker shape via a runtime-guarded mapper. Keeps the trim/no-trim
+                // behavior aligned across plan-rollup and session-start reconcile.
+                const mirrored = raw.blockers
+                    .filter((b) => typeof b === 'object' && b !== null)
+                    .map((b) => (0, plan_rollup_1.formatBlockerForSyncState)({
+                    type: (typeof b.type === 'string' ? b.type : 'blocker'),
+                    severity: (typeof b.severity === 'string' ? b.severity : 'medium'),
+                    description: typeof b.description === 'string' ? b.description : undefined,
+                    blocking: typeof b.blocking === 'string' ? b.blocking : undefined,
+                    blocked: typeof b.blocked === 'string' ? b.blocked : undefined,
+                    milestone: typeof b.milestone === 'string' ? b.milestone : undefined,
+                }));
+                const existing = syncPlanSummary.blockers ?? [];
+                const differs = mirrored.length !== existing.length
+                    || mirrored.some((v, i) => v !== existing[i]);
+                if (differs) {
+                    corrections.push({
+                        check: 3,
+                        field: 'sync.plan.blockers',
+                        oldValue: `[${existing.length} entries]`,
+                        newValue: `[${mirrored.length} entries]`,
+                    });
+                    manager.updatePlanSummary({ blockers: mirrored });
                 }
             }
         }
@@ -624,11 +1020,13 @@ async function main(args) {
                 '',
                 'Operations:',
                 '  update-workpackage           Update WP summary in sync-state',
+                '  update-session               Update session summary in sync-state',
                 '  update-knowledge             Update knowledge summary after capture',
                 '  link-knowledge               Link knowledge entry to active WP',
                 '  persist                      Save current sync-state to disk',
                 '  load                         Load sync-state from disk as JSON',
                 '  reconcile                    Detect/correct stale knowledge links',
+                '  reconcile-knowledge          Rebuild the knowledge cache from source-of-truth',
                 '  reconcile-plan               Detect/correct plan/WP state drift',
                 '',
                 'Options:',
@@ -668,8 +1066,10 @@ async function main(args) {
             error: 'Missing required --clear-dir argument',
         };
         console.log(JSON.stringify(result));
-        process.exit(1);
-        return; // unreachable in production, needed for test mock of process.exit
+        // `return process.exit(...)` (not `exit(); return;`): process.exit returns `never` in
+        // production; under the no-op exit mock the sync-bridge-cli tests use it returns, so this
+        // `return` exits the handler. The single-statement form avoids a TS7027 unreachable warning.
+        return process.exit(1);
     }
     if (!options.op) {
         const result = {
@@ -678,8 +1078,7 @@ async function main(args) {
             error: 'Missing required --op argument',
         };
         console.log(JSON.stringify(result));
-        process.exit(1);
-        return;
+        return process.exit(1); // see note above
     }
     // Look up handler
     const handler = DISPATCH_MAP[options.op];
@@ -691,9 +1090,17 @@ async function main(args) {
             availableOps: Object.keys(DISPATCH_MAP),
         };
         console.log(JSON.stringify(result));
-        process.exit(1);
-        return;
+        return process.exit(1); // see note above
     }
+    // Normalize --clear-dir to the project root regardless of which convention the
+    // caller passed (`.`/$CWD project-root form OR `./.clear` form). Every sync-bridge
+    // handler treats opts.clearDir as the project root (joins `.clear` onto it); a
+    // dispatcher passing the .clear dir would otherwise nest into <root>/.clear/.clear/
+    // — the OBS-7 reconcile "0 corrections" artifact. resolveClearDir collapses both
+    // forms to the same project root. (The production path is already traversal-checked
+    // by parseCliArgs; the direct-args test path intentionally skips that, and
+    // resolveClearDir does no filesystem access.)
+    options.clearDir = (0, validation_1.resolveClearDir)(options.clearDir).projectRoot;
     // Create manager and load state
     const manager = new context_hub_1.SyncStateManager(options.clearDir);
     manager.load();

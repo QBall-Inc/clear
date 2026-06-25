@@ -51,6 +51,7 @@ const types_1 = require("../types");
 const writer_1 = require("../writer");
 const parser_1 = require("../parser");
 const types_2 = require("../../sync/types");
+const sanitize_path_1 = require("../../cli/sanitize-path");
 // ==============================================================================
 // CONSTANTS
 // ==============================================================================
@@ -82,6 +83,18 @@ class NameValidationError extends Error {
     }
 }
 exports.NameValidationError = NameValidationError;
+/**
+ * Apply the dual-key envelope to a result before serialization.
+ */
+function withEnvelope(result) {
+    const text = result.additionalContext ?? result.error ?? '';
+    return {
+        ...result,
+        success: result.status === 'success',
+        message: text,
+        additionalContext: text,
+    };
+}
 // ==============================================================================
 // VALIDATION
 // ==============================================================================
@@ -225,11 +238,10 @@ async function runCreatePlanCLI(input) {
     const cwd = (0, validation_1.validateBasePath)(input.cwd);
     // Check if plan already exists
     if ((0, writer_1.masterPlanExists)(cwd) && !force) {
-        const planPath = path.join(cwd, '.clear', 'plans', 'master-plan.yaml');
         return {
             status: 'exists',
             error: 'Master plan already exists',
-            additionalContext: formatExistsMessage(planPath)
+            additionalContext: formatExistsMessage('.clear/plans/master-plan.yaml')
         };
     }
     // Validate name if provided
@@ -260,10 +272,11 @@ async function runCreatePlanCLI(input) {
             createDirs: true
         });
         if (writeResult.status === 'error') {
+            const sanitized = (0, sanitize_path_1.redactProjectPath)(writeResult.error ?? 'unknown write error', cwd);
             return {
                 status: 'error',
-                error: writeResult.error,
-                additionalContext: `Failed to write master plan: ${writeResult.error}`
+                error: sanitized,
+                additionalContext: `Failed to write master plan: ${sanitized}`
             };
         }
         // Write plan state
@@ -286,10 +299,12 @@ async function runCreatePlanCLI(input) {
         };
     }
     catch (error) {
+        const rawMessage = error instanceof Error ? error.message : 'Unknown error';
+        const sanitized = (0, sanitize_path_1.redactProjectPath)(rawMessage, cwd);
         return {
             status: 'error',
-            error: error instanceof Error ? error.message : 'Unknown error',
-            additionalContext: `Failed to create plan: ${error instanceof Error ? error.message : 'Unknown error'}`
+            error: sanitized,
+            additionalContext: `Failed to create plan: ${sanitized}`
         };
     }
 }
@@ -336,10 +351,15 @@ if (require.main === module) {
     const input = parseArgs();
     runCreatePlanCLI(input)
         .then(result => {
-        console.log(JSON.stringify(result));
+        console.log(JSON.stringify(withEnvelope(result)));
     })
         .catch(error => {
-        console.error(JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }));
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        console.error(JSON.stringify(withEnvelope({
+            status: 'error',
+            error: errorMessage,
+            additionalContext: errorMessage,
+        })));
         process.exit(1);
     });
 }

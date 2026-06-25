@@ -4,7 +4,7 @@
  * Manages plan loading, multi-signal progress tracking, milestone detection,
  * and blocker identification.
  */
-import { MasterPlan, Phase, Milestone, PlanState, Blocker, PhaseProgressResult, MilestoneCheckResult, MultiSignalResult, ProgressWeights, RiskThresholds } from './types';
+import { MasterPlan, Phase, Milestone, PlanState, Blocker, PhaseProgressResult, MilestoneCheckResult, MultiSignalResult, MilestoneStatus, ProgressWeights, RiskThresholds } from './types';
 export declare class PlanRegistryError extends Error {
     readonly planId?: string | undefined;
     readonly details?: Record<string, unknown> | undefined;
@@ -104,6 +104,11 @@ export declare class PlanRegistryManager {
     getMilestone(milestoneId: string): Milestone | null;
     /**
      * Get the active phase
+     *
+     * Uses resolvePhase so non-canonical activePhase values (legacy snake_case
+     * "phase_N" via plan import / hand-edit / plan-write-cli full-rewrite) still
+     * resolve correctly instead of returning null and breaking next-cli +
+     * progress-cli + state sync.
      */
     getActivePhase(): Phase | null;
     /**
@@ -124,7 +129,7 @@ export declare class PlanRegistryManager {
     initializeState(sessionId: string): PlanState;
     /**
      * Get workpackage progress from P1.4 state
-     * @returns Map of workpackage ID to progress (0-1)
+     * @returns Map of workpackage ID to progress (0-100 percentage)
      *
      * Data sources (in priority order):
      * 1. workpackage.json - active workpackage's current progress
@@ -142,22 +147,22 @@ export declare class PlanRegistryManager {
     calculatePhaseProgress(phaseId: string): PhaseProgressResult;
     /**
      * Get commit activity since phase start
-     * @returns Normalized activity score (0-1)
+     * @returns Normalized activity score (0-100 percentage)
      */
     getCommitActivity(): number;
     /**
      * Get test status from npm test result
-     * @returns Normalized test score (0-1)
+     * @returns Normalized test score (0-100 percentage)
      */
     getTestStatus(): number;
     /**
      * Get documentation coverage
-     * @returns Normalized docs score (0-1)
+     * @returns Normalized docs score (0-100 percentage)
      */
     getDocsCoverage(): number;
     /**
      * Get integration status
-     * @returns Normalized integration score (0-1)
+     * @returns Normalized integration score (0-100 percentage)
      */
     getIntegrationStatus(): number;
     /**
@@ -172,14 +177,43 @@ export declare class PlanRegistryManager {
      */
     checkMilestoneStatus(milestoneId: string): MilestoneCheckResult;
     /**
-     * Mark a milestone as complete
+     * Set a milestone's status across BOTH persistence surfaces in lockstep:
+     *
+     *  - plan.json `state.milestones[id]` — the runtime source of truth that
+     *    checkMilestoneStatus, the rollup, and lifecycle-cli read.
+     *  - master-plan.yaml `milestone.status` — the durable seed re-applied to a
+     *    fresh consumer's plan.json on first load.
+     *
+     * Keeping the two in agreement is the INV-2 invariant the gate-declaration
+     * read-side depends on: the gate branch of checkMilestoneStatus trusts the
+     * plan.json status only because this writer keeps it equal to master-plan.
+     *
+     * `completedAt` is stamped only for `complete`; any residual `completedAt` is
+     * dropped for every other status so a reverted milestone leaves no drift in
+     * either file.
+     *
+     * The master-plan write targets this registry's own `masterPlanYamlPath` (the
+     * exact path it reads from), guaranteeing read/write symmetry regardless of
+     * how `clearDir` was constructed.
+     *
+     * @param milestoneId - Milestone ID
+     * @param status - Target status (complete | in_progress | not_started)
+     */
+    setMilestoneStatus(milestoneId: string, status: MilestoneStatus): void;
+    /**
+     * Mark a milestone as complete. Thin wrapper over setMilestoneStatus so the
+     * lockstep two-surface write lives in one place; preserves existing callers.
      * @param milestoneId - Milestone ID
      */
     markMilestoneComplete(milestoneId: string): void;
     /**
-     * Get milestone risk assessment
+     * Get milestone risk assessment.
+     * Both fields are 0-100 percentages: `timeConsumed` is the fraction of the
+     * milestone timeline elapsed, `progress` is the average WP progress across
+     * the milestone's required workpackages.
+     *
      * @param milestoneId - Milestone ID
-     * @returns Risk data
+     * @returns Risk data with timeConsumed and progress both as 0-100 percentages
      */
     getMilestoneRisk(milestoneId: string): {
         timeConsumed: number;

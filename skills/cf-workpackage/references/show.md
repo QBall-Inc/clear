@@ -19,8 +19,8 @@ WP_ID="$1"
 if [ -z "$WP_ID" ]; then
   echo "Usage: /cf-workpackage show <id>"; exit 1
 fi
-RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/workpackage/cli/status-cli.js" show "$WP_ID" --clear-dir=.clear 2>/dev/null)
-CONTEXT=$(echo "$RESULT" | jq -r '.additionalContext // "Workpackage not found"')
+RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/workpackage/cli/status-cli.js" show "$WP_ID" --clear-dir=./.clear 2>/dev/null)
+CONTEXT=$(echo "$RESULT" | jq -r '.message // "Workpackage not found"')
 echo "$CONTEXT"
 ```
 

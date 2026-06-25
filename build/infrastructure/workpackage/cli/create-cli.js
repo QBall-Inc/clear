@@ -40,30 +40,21 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.TitleValidationError = exports.PhaseNotFoundError = exports.NoPlanError = exports.VALID_PRIORITIES = exports.VALID_TYPES = exports.MAX_TITLE_LENGTH = void 0;
+exports.TitleValidationError = exports.PhaseNotFoundError = exports.NoPlanError = exports.MAX_TITLE_LENGTH = void 0;
 exports.validateTitleLength = validateTitleLength;
-exports.isValidType = isValidType;
-exports.isValidPriority = isValidPriority;
 exports.runCreateWorkpackageCLI = runCreateWorkpackageCLI;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const validation_1 = require("../../validation");
 const registry_1 = require("../../plan/registry");
 const registry_2 = require("../registry");
+const types_1 = require("../types");
 const plan_propagate_1 = require("../../sync/plan-propagate");
 // ==============================================================================
 // CONSTANTS
 // ==============================================================================
 /** Maximum length for workpackage title */
 exports.MAX_TITLE_LENGTH = 80;
-/** Valid workpackage types */
-exports.VALID_TYPES = [
-    'feature', 'bugfix', 'refactor', 'documentation', 'infrastructure'
-];
-/** Valid priorities */
-exports.VALID_PRIORITIES = [
-    'critical', 'high', 'medium', 'low'
-];
 // ==============================================================================
 // ERROR TYPES
 // ==============================================================================
@@ -100,6 +91,18 @@ class TitleValidationError extends Error {
     }
 }
 exports.TitleValidationError = TitleValidationError;
+/**
+ * Apply the dual-key envelope to a result before serialization.
+ */
+function withEnvelope(result) {
+    const text = result.additionalContext ?? result.error ?? '';
+    return {
+        ...result,
+        success: result.status === 'success',
+        message: text,
+        additionalContext: text,
+    };
+}
 // ==============================================================================
 // VALIDATION
 // ==============================================================================
@@ -114,22 +117,6 @@ function validateTitleLength(title) {
     }
     const suggested = title.substring(0, exports.MAX_TITLE_LENGTH - 3).trim() + '...';
     return { valid: false, suggested };
-}
-/**
- * Validate workpackage type
- * @param type - Type to validate
- * @returns true if valid
- */
-function isValidType(type) {
-    return exports.VALID_TYPES.includes(type);
-}
-/**
- * Validate workpackage priority
- * @param priority - Priority to validate
- * @returns true if valid
- */
-function isValidPriority(priority) {
-    return exports.VALID_PRIORITIES.includes(priority);
 }
 // ==============================================================================
 // OUTPUT FORMATTING
@@ -213,6 +200,25 @@ function resolveInsertPosition(clearDir, phaseSystemId, afterId) {
  */
 async function runCreateWorkpackageCLI(input) {
     const validatedCwd = (0, validation_1.validateBasePath)(input.cwd);
+    // Reject invalid type/priority before any plan/phase/registry/state mutation.
+    // Belt-and-braces with parser.ts validateEnum (read-time) and
+    // writeWorkpackageAtomic's pre-write round-trip; this is the front-door gate.
+    if (input.type !== undefined && !(0, types_1.isWorkpackageType)(input.type)) {
+        const errorMessage = `Invalid type: ${input.type}. Must be one of: ${types_1.WORKPACKAGE_TYPES.join(', ')}`;
+        return {
+            status: 'error',
+            error: errorMessage,
+            additionalContext: errorMessage,
+        };
+    }
+    if (input.priority !== undefined && !(0, types_1.isWorkpackagePriority)(input.priority)) {
+        const errorMessage = `Invalid priority: ${input.priority}. Must be one of: ${types_1.WORKPACKAGE_PRIORITIES.join(', ')}`;
+        return {
+            status: 'error',
+            error: errorMessage,
+            additionalContext: errorMessage,
+        };
+    }
     const { phaseId, title, afterId, type = 'feature', priority = 'medium', sessionId = 'unknown', sessionNumber = 0, description, acceptance_criteria, verification, notes, deliverables_text, scope_in, scope_out } = input;
     const cwd = validatedCwd;
     const clearDir = path.join(cwd, '.clear');
@@ -394,8 +400,8 @@ if (require.main === module) {
                 '  --phase=<phase-id>           Target phase ID (required)',
                 '  --title=<title>              Workpackage title (required)',
                 '  --after=<wp-id>              Insert after this workpackage ID',
-                '  --type=<type>                Workpackage type',
-                '  --priority=<priority>        Workpackage priority',
+                `  --type=<type>                Workpackage type (${types_1.WORKPACKAGE_TYPES.join('|')})`,
+                `  --priority=<priority>        Workpackage priority (${types_1.WORKPACKAGE_PRIORITIES.join('|')})`,
                 '  --description=<text>         Workpackage description',
                 '  --session-id=<id>            Current session identifier',
                 '  --session-number=<number>    Current session number',
@@ -417,24 +423,45 @@ if (require.main === module) {
             input = mergeStdinInput(input, json);
         }
         catch (err) {
-            console.error(JSON.stringify({
-                error: `Failed to read stdin JSON: ${err instanceof Error ? err.message : 'Unknown error'}`
-            }));
+            const errorMessage = `Failed to read stdin JSON: ${err instanceof Error ? err.message : 'Unknown error'}`;
+            console.error(JSON.stringify(withEnvelope({
+                status: 'error',
+                error: errorMessage,
+                additionalContext: errorMessage,
+            })));
             process.exit(1);
         }
     }
     if (!input.phaseId) {
-        console.error(JSON.stringify({
-            error: 'Usage: create-cli.js --cwd=<path> --phase=<id> [--title=<title>] [--from-stdin] [--type=<type>] [--priority=<priority>]'
-        }));
+        const errorMessage = 'Usage: create-cli.js --cwd=<path> --phase=<id> [--title=<title>] [--from-stdin] [--type=<type>] [--priority=<priority>]';
+        console.error(JSON.stringify(withEnvelope({
+            status: 'error',
+            error: errorMessage,
+            additionalContext: errorMessage,
+        })));
         process.exit(1);
     }
     runCreateWorkpackageCLI(input)
         .then(result => {
-        console.log(JSON.stringify(result));
+        const enveloped = withEnvelope(result);
+        // Input-validation rejections (status='error') write to stderr and exit 1
+        // so shells can branch on `$?`. State outcomes (no_plan, phase_not_found)
+        // preserve exit 0 + stdout — callers parse the envelope to learn the state.
+        if (result.status === 'error') {
+            console.error(JSON.stringify(enveloped));
+            process.exit(1);
+        }
+        else {
+            console.log(JSON.stringify(enveloped));
+        }
     })
         .catch(error => {
-        console.error(JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }));
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        console.error(JSON.stringify(withEnvelope({
+            status: 'error',
+            error: errorMessage,
+            additionalContext: errorMessage,
+        })));
         process.exit(1);
     });
 }

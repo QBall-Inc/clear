@@ -49,10 +49,13 @@ exports.validateChainDepth = validateChainDepth;
 exports.validateEntriesForSupersession = validateEntriesForSupersession;
 exports.formatChain = formatChain;
 exports.runSupersedeCLI = runSupersedeCLI;
+const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const db_1 = require("../db");
 const validation_1 = require("../../validation");
 const deprecation_1 = require("../../sync/deprecation");
+const parser_1 = require("../parser");
+const capture_cli_1 = require("./capture-cli");
 /**
  * Maximum allowed supersession chain depth
  */
@@ -239,11 +242,21 @@ async function runSupersedeCLI(clearDir, oldEntryId, newEntryId, options) {
                 output: `Error: ${supersessionResult.error || 'Supersession failed'}`
             };
         }
-        // Update new entry's supersedes field in DB
+        // Update new entry's supersedes field in DB and .md frontmatter
+        const knowledgeDir = path.join(clearDir, 'knowledge', 'entries');
         const newEntryUpdated = db.getEntry(newEntryId);
         if (newEntryUpdated) {
             newEntryUpdated.supersedes = oldEntryId;
             db.upsertEntry(newEntryUpdated);
+            // Sync supersedes to .md so incrementalUpdate won't overwrite it
+            const newFilePath = path.join(knowledgeDir, `${newEntryId}.md`);
+            (0, parser_1.updateKnowledgeFile)(newFilePath, { supersedes: oldEntryId });
+        }
+        // Trigger index rebuild only if .md files exist — incrementalUpdate removes
+        // entries without corresponding files, which would revert the supersession
+        const oldFilePath = path.join(knowledgeDir, `${oldEntryId}.md`);
+        if (fs.existsSync(oldFilePath)) {
+            (0, capture_cli_1.triggerIndexUpdate)(clearDir, options?.sessionNumber ?? 0, oldEntryId);
         }
         const lines = [];
         lines.push(`🔄 Superseding ${oldEntryId} with ${newEntryId}`);

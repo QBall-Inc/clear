@@ -32,8 +32,8 @@ if [ -z "$WP_ID" ]; then
   echo "Usage: /cf-workpackage delete <id> [--confirm]"; exit 1
 fi
 if [[ "$*" == *"--confirm"* ]]; then CONFIRM_FLAG="--confirm"; fi
-RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/workpackage/cli/lifecycle-cli.js" delete "$WP_ID" $CONFIRM_FLAG --clear-dir=.clear 2>/dev/null)
-CONTEXT=$(echo "$RESULT" | jq -r '.additionalContext // .error // "Unknown error"')
+RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/workpackage/cli/lifecycle-cli.js" delete "$WP_ID" $CONFIRM_FLAG --clear-dir=./.clear 2>/dev/null)
+CONTEXT=$(echo "$RESULT" | jq -r '.message // .error // "Unknown error"')
 echo "$CONTEXT"
 ```
 

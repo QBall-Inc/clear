@@ -26,7 +26,7 @@ echo ""
 ### 2. Calculate Progress
 
 ```bash
-PROGRESS_RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/plan/cli/progress-cli.js" --clear-dir=.clear 2>/dev/null)
+PROGRESS_RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/plan/cli/progress-cli.js" --clear-dir=./.clear 2>/dev/null)
 PROGRESS=$(echo "$PROGRESS_RESULT" | jq -r '.progress // 0')
 PROGRESS_PCT=$(echo "$PROGRESS" | awk '{printf "%.0f", $1 * 100}')
 

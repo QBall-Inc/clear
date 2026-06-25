@@ -14,7 +14,12 @@ import { KnowledgeEntry } from '../types';
  * @param entry - Knowledge entry to format
  * @returns Formatted string output
  */
-export declare function formatEntry(entry: KnowledgeEntry): string;
+export declare function formatEntry(entry: KnowledgeEntry, options?: {
+    relatedFiles?: string[];
+    wpDisplayId?: string;
+    phaseDisplayId?: string;
+    clearDir?: string;
+}): string;
 /**
  * Run knowledge show CLI
  * @param clearDir - Path to .clear directory

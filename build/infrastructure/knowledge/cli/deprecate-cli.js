@@ -12,15 +12,53 @@
  *   npx ts-node src/infrastructure/knowledge/cli/deprecate-cli.ts <id> --reason="Outdated approach" --clear-dir=/path/.clear
  *   npx ts-node src/infrastructure/knowledge/cli/deprecate-cli.ts <id> --force --clear-dir=/path/.clear
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.InvalidDeprecationError = exports.KnowledgeNotFoundError = void 0;
 exports.getDeprecationImpact = getDeprecationImpact;
 exports.formatImpactAnalysis = formatImpactAnalysis;
 exports.validateEntryForDeprecation = validateEntryForDeprecation;
 exports.runDeprecateCLI = runDeprecateCLI;
+const path = __importStar(require("path"));
 const db_1 = require("../db");
+const types_1 = require("../types");
 const validation_1 = require("../../validation");
 const audit_log_1 = require("../../sync/audit-log");
+const context_hub_1 = require("../../sync/context-hub");
+const parser_1 = require("../parser");
+const capture_cli_1 = require("./capture-cli");
 /**
  * Knowledge not found error
  */
@@ -145,6 +183,13 @@ async function runDeprecateCLI(clearDir, entryId, options) {
             output: 'Error: Knowledge entry ID is required'
         };
     }
+    if (!(0, parser_1.isValidId)(entryId)) {
+        // LINT-K3.5-03: example list via the shared `formatValidIdExamples()` helper.
+        return {
+            success: false,
+            output: `Error: Invalid entry ID format: '${entryId}'. Expected format: ${(0, types_1.formatValidIdExamples)()}`
+        };
+    }
     const db = new db_1.KnowledgeDatabase(clearDir);
     const initialized = db.initialize();
     if (!initialized) {
@@ -195,9 +240,35 @@ async function runDeprecateCLI(clearDir, entryId, options) {
                 output: `Error: Failed to deprecate ${entryId}`
             };
         }
-        // Log audit entry if session info provided
-        if (options?.sessionId && options?.sessionNumber) {
-            const auditLogger = new audit_log_1.AuditLogger(clearDir.replace('/.clear', ''), options.sessionId, options.sessionNumber);
+        // K2.7 gap fix: add to sync-state deprecatedReferences so the entry surfaces
+        // in the session-start warning banner on the next session.
+        try {
+            const basePath = path.dirname(clearDir);
+            const syncManager = new context_hub_1.SyncStateManager(basePath);
+            syncManager.load();
+            syncManager.addDeprecatedReference(entryId);
+            syncManager.save();
+        }
+        catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            process.stderr.write(`[CLEAR] Warning: failed to add ${entryId} to deprecatedReferences: ${msg}\n`);
+        }
+        // Update .md frontmatter to match SQLite (prevents index rebuild from reverting status)
+        const knowledgeDir = path.join(clearDir, 'knowledge', 'entries');
+        const entryFilePath = path.join(knowledgeDir, `${entryId}.md`);
+        const fileUpdated = (0, parser_1.updateKnowledgeFile)(entryFilePath, {
+            status: 'deprecated'
+        });
+        // Trigger index rebuild only if .md file exists — incrementalUpdate removes
+        // entries without corresponding files, which would revert the deprecation
+        if (fileUpdated) {
+            (0, capture_cli_1.triggerIndexUpdate)(clearDir, options?.sessionNumber ?? 0, entryId);
+        }
+        // Log audit entry if session info provided.
+        // Guard on presence, not truthiness: sessionNumber 0 is the first session
+        // of a project and must still emit the audit row.
+        if (options?.sessionId && options?.sessionNumber !== undefined) {
+            const auditLogger = new audit_log_1.AuditLogger(path.dirname(clearDir), options.sessionId, options.sessionNumber);
             auditLogger.logUpdate('knowledge', 'deprecate', entryId, {
                 targetDisplayId: entryId,
                 oldValue: { status: entry.status },

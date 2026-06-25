@@ -26,8 +26,8 @@ if [ -n "$PHASE_ID" ]; then FLAGS="$FLAGS --phase=$PHASE_ID"; fi
 STATUS_FILTER=$(echo "$*" | sed -n 's/.*--status[= ]\([^ ]*\).*/\1/p')
 if [ -n "$STATUS_FILTER" ]; then FLAGS="$FLAGS --status=$STATUS_FILTER"; fi
 
-RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/workpackage/cli/status-cli.js" list $FLAGS --clear-dir=.clear 2>/dev/null)
-CONTEXT=$(echo "$RESULT" | jq -r '.additionalContext // "No workpackages found"')
+RESULT=$(node "$CLEAR_PLUGIN_ROOT/build/infrastructure/workpackage/cli/status-cli.js" list $FLAGS --clear-dir=./.clear 2>/dev/null)
+CONTEXT=$(echo "$RESULT" | jq -r '.message // "No workpackages found"')
 echo "$CONTEXT"
 ```
 

@@ -10,7 +10,9 @@
  * Based on P1.6 Feature Brief v1.1.0 Section 3.2.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.formatBlockerForSyncState = formatBlockerForSyncState;
 exports.rollupPlanProgress = rollupPlanProgress;
+exports.writePhaseProgressLockstep = writePhaseProgressLockstep;
 exports.createPlanRollupHandler = createPlanRollupHandler;
 exports.getUpcomingMilestones = getUpcomingMilestones;
 const registry_1 = require("../plan/registry");
@@ -18,6 +20,25 @@ const writer_1 = require("../plan/writer");
 const validation_1 = require("../validation");
 const context_hub_1 = require("./context-hub");
 const audit_log_1 = require("./audit-log");
+/**
+ * WP-DF3 AC5 (S167 G8 fix): convert a persisted Blocker (from plan.json) into
+ * a human-readable string for sync-state.plan.blockers. Sync-state carries the
+ * lighter `string[]` shape; plan.json owns the structured form. Prefers the
+ * blocker's own `description` (trimmed) if set; otherwise builds a fallback
+ * from type + blocking/blocked/milestone identifiers.
+ *
+ * Exported so the reconcile-plan Check 3 session-start safety net in
+ * sync-bridge-cli.ts can use the same conversion. Eliminates the trim/no-trim
+ * divergence flagged by Stage 3a STD-001 + LINT-03 cross-role dup.
+ */
+function formatBlockerForSyncState(blocker) {
+    const desc = blocker.description?.trim();
+    if (desc) {
+        return desc;
+    }
+    const subject = blocker.blocking || blocker.blocked || blocker.milestone || 'unspecified';
+    return `${blocker.type}: ${subject}`;
+}
 // ==============================================================================
 // PLAN ROLL-UP
 // ==============================================================================
@@ -72,12 +93,14 @@ async function rollupPlanProgress(input) {
             totalPhaseWeight += 1;
             weightedPhaseProgress += result.progress;
         }
+        // Math.round to integer 0-100 — symmetric with calculatePhaseProgress and the
+        // WP-level calculateProgress. Every persisted progress field is integer.
         const overallProgress = totalPhaseWeight > 0
-            ? weightedPhaseProgress / totalPhaseWeight
+            ? Math.round(weightedPhaseProgress / totalPhaseWeight)
             : 0;
         // Check for milestone achievements
         const milestonesAchieved = [];
-        const state = planRegistry.loadState();
+        let state = planRegistry.loadState();
         for (const milestone of plan.milestones) {
             // Skip already completed milestones
             const milestoneState = state.milestones[milestone.id];
@@ -117,31 +140,45 @@ async function rollupPlanProgress(input) {
                 });
             }
         }
+        // Re-read plan state before the final write: the milestone loop above
+        // persists each achievement through setMilestoneStatus (its own
+        // loadState/saveState), so our pre-loop `state` snapshot predates those
+        // writes and saving it as-is would clobber the milestone statuses out of
+        // plan.json (leaving master-plan.yaml ahead — an INV-2 divergence).
+        state = planRegistry.loadState();
         // Update plan state with new progress
         state.phaseProgress = phaseProgress;
+        // Recompute the multi-signal projection alongside phaseProgress so the
+        // workpackages signal stays coherent with the phase it summarizes. Without
+        // this, a lifecycle change advances phaseProgress but leaves
+        // multiSignalData.workpackages stale (the dashboard then shows a non-zero
+        // phase percentage next to "0 workpackages done"). Reuses the same
+        // calculateMultiSignalProgress() the progress CLI uses — one computation,
+        // both write paths converge.
+        state.multiSignalData = planRegistry.calculateMultiSignalProgress().signals;
         state.lastActivity = timestamp;
-        planRegistry.saveState(state);
+        // Single-writer lockstep: persist phaseProgress to plan.json AND mirror it
+        // into master-plan.yaml phases[].progress + derived status in one operation,
+        // so the two surfaces never diverge.
+        writePhaseProgressLockstep(planRegistry, plan, state, basePath, { backup: true });
         domainsUpdated.push('plan');
-        // Fix 5: Write phase progress + derived status back to master-plan.yaml
-        for (const phase of plan.phases) {
-            const progress = phaseProgress[phase.id] ?? 0;
-            phase.progress = progress;
-            phase.status = derivePhaseStatus(progress, phase.status);
-        }
-        const writeResult = (0, writer_1.writeMasterPlan)(basePath, plan, { backup: true });
-        if (writeResult.status === 'error') {
-            console.error(`[plan-rollup] writeMasterPlan failed: ${writeResult.error}`);
-        }
         // Update sync state
         const syncManager = new context_hub_1.SyncStateManager(basePath);
         syncManager.load();
         // Calculate active phase progress
         const activePhaseProgress = phaseProgress[state.activePhaseId] ?? 0;
+        // WP-DF3 AC5 (S167 G8 fix): mirror blockers from plan.json (state.blockers,
+        // structured Blocker[]) into sync-state.plan.blockers (string[]).
+        // Previously hardcoded `[]`, which left /cf-status + downstream consumers
+        // showing 0 blockers regardless of detected dependencies. blockers-cli is
+        // the producer; plan-rollup is the propagation point because it already
+        // fires on every WP lifecycle change.
         syncManager.updatePlanSummary({
             activePhaseSystemId: state.activePhaseSystemId ?? '',
             activePhaseDisplayId: state.activePhaseId,
             phaseProgress: activePhaseProgress,
-            blockers: []
+            planProgress: overallProgress,
+            blockers: state.blockers.map(formatBlockerForSyncState),
         });
         syncManager.save();
         domainsUpdated.push('sync');
@@ -213,6 +250,62 @@ function generateCelebrationMessage(achievements) {
     return `Milestones achieved: ${parts.join(' and ')}! (${achievements.map(m => m.milestoneName).join(', ')})`;
 }
 // ==============================================================================
+// PHASE PROGRESS WRITE-BACK (LOCKSTEP)
+// ==============================================================================
+/**
+ * Single-writer lockstep for phase progress — fans one already-decided
+ * phaseProgress map out to BOTH persistence surfaces in one call.
+ *
+ * Persists `state.phaseProgress` to plan.json (saveState) AND mirrors it into
+ * master-plan.yaml `phases[].progress` + derived `phases[].status`. Routing all
+ * phaseProgress writers through this single function is what keeps the two
+ * surfaces in step (the dashboard reads both — a plan.json-only write was the
+ * source of the dual-surface progress split this fixes). NOTE: "in step" is a
+ * single-writer guarantee, not crash-safety — saveState runs first, so if the
+ * subsequent master-plan write fails it is logged (fire-and-log, below) and
+ * plan.json is left ahead until the next write reconciles it.
+ *
+ * The CALLER owns the compute and any non-phaseProgress state. It writes the
+ * (single) calculatePhaseProgress result onto `state.phaseProgress` — a full map
+ * for the roll-up, a single active-phase key for the progress/load CLIs — and
+ * sets any state fields IT is responsible for (lastActivity always; and
+ * multiSignalData ONLY for callers that recompute it, i.e. the roll-up and the
+ * progress CLI; the load path intentionally carries multiSignalData through
+ * unchanged). This helper does NOT recompute progress and does NOT touch
+ * multiSignalData.
+ *
+ * Master-plan phase progress is read back from `state.phaseProgress` (the single
+ * source just persisted to plan.json). KEY INVARIANT: `state.phaseProgress` is
+ * keyed by phase DISPLAY id — the same `phase.id` iterated here — NOT by
+ * `phase.systemId`; a caller that keys it by systemId would silently zero every
+ * phase. The `?? phase.progress ?? 0` fallback is intentional: a single-key
+ * caller leaves phases absent from its update at their existing master-plan
+ * value; a full-map caller (roll-up) populates every key so the fallback never
+ * fires. plan.json is saved BEFORE master-plan (canonical projection last).
+ *
+ * @param planRegistry - plan registry manager (owns saveState)
+ * @param plan - master plan object; `phases[].progress` + `.status` are MUTATED
+ *   IN PLACE on the caller's object, then written
+ * @param state - plan state, with `state.phaseProgress` already updated by the caller
+ * @param basePath - PROJECT ROOT (writeMasterPlan joins `.clear/plans/master-plan.yaml`)
+ * @param options.backup - back up master-plan.yaml before overwrite (default false)
+ */
+function writePhaseProgressLockstep(planRegistry, plan, state, basePath, options = {}) {
+    // plan.json first.
+    planRegistry.saveState(state);
+    // master-plan.yaml: mirror phase progress + derived status from the SAME
+    // state.phaseProgress map that was just persisted to plan.json.
+    for (const phase of plan.phases) {
+        const progress = state.phaseProgress[phase.id] ?? phase.progress ?? 0;
+        phase.progress = progress;
+        phase.status = derivePhaseStatus(progress, phase.status);
+    }
+    const writeResult = (0, writer_1.writeMasterPlan)(basePath, plan, { backup: options.backup ?? false });
+    if (writeResult.status === 'error') {
+        console.error(`[plan-rollup] writeMasterPlan failed: ${writeResult.error}`);
+    }
+}
+// ==============================================================================
 // STATUS DERIVATION
 // ==============================================================================
 /**
@@ -220,7 +313,7 @@ function generateCelebrationMessage(achievements) {
  * Preserves manually-set statuses (blocked, deferred) that should not be
  * overridden by progress-based derivation.
  *
- * @param progress - Calculated progress (0-1)
+ * @param progress - Calculated progress (0-100 percentage)
  * @param currentStatus - Current phase status
  * @returns Derived phase status
  */
@@ -229,7 +322,7 @@ function derivePhaseStatus(progress, currentStatus) {
     if (currentStatus === 'blocked' || currentStatus === 'deferred') {
         return currentStatus;
     }
-    if (progress >= 1) {
+    if (progress >= 100) {
         return 'complete';
     }
     if (progress > 0) {

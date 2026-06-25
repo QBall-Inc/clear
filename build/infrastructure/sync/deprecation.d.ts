@@ -142,6 +142,19 @@ export declare function resolveSupersessionChain(basePath: string, startId: stri
  */
 export declare function getDeprecationWarnings(basePath: string): DeprecationWarning[];
 /**
+ * Check whether a knowledge entry is "orphan" from the perspective of the
+ * session-start deprecation banner:
+ *   - its markdown file is missing, OR
+ *   - related_files is non-empty AND none of the referenced files exist on disk.
+ *
+ * Entries with no related_files array are NOT considered orphan (we can't judge
+ * from missing metadata alone — keep the warning so the user can decide).
+ *
+ * @param basePath - Project root directory
+ * @param id - Knowledge entry ID (e.g., "TD-001")
+ */
+export declare function isOrphanDeprecation(basePath: string, id: string): boolean;
+/**
  * Clear deprecation warnings for a knowledge entry.
  *
  * @param basePath - Project root directory

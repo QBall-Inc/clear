@@ -12,13 +12,14 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const registry_1 = require("../registry");
 const registry_2 = require("../../workpackage/registry");
 const parse_args_1 = require("../../cli/parse-args");
+const validation_1 = require("../../validation");
 /** Sort key for workpackages without a position (sorts to end) */
 const UNPHASED_SORT_KEY = 999;
 /**
  * Parse command line arguments
  */
 function parseArgs() {
-    return (0, parse_args_1.parseCliArgs)({ clearDir: '.clear' }, []);
+    return (0, parse_args_1.parseCliArgs)({ clearDir: './.clear' }, []);
 }
 /**
  * Format the next recommendation message
@@ -47,7 +48,7 @@ function formatContinueCurrent(displayId, name, progress) {
     lines.push('========================');
     lines.push('');
     lines.push(`Current workpackage: ${displayId} - ${name}`);
-    lines.push(`Progress: ${Math.round(progress * 100)}%`);
+    lines.push(`Progress: ${Math.round(progress)}%`);
     lines.push('');
     lines.push('Recommendation: Continue with current workpackage');
     lines.push('');
@@ -66,45 +67,62 @@ function buildNoNextResponse(wpRegistry, activePhaseId, phaseName) {
     const phaseWps = registry.workpackages.filter((wp) => wp.phase === activePhaseId || !wp.phase);
     const incompleteCount = phaseWps.filter((wp) => wp.status !== 'complete' && wp.status !== 'deferred').length;
     if (incompleteCount === 0) {
+        const text = `Phase "${phaseName}" is complete!\n\nAll workpackages finished. Consider moving to the next phase.`;
         return {
-            status: 'no_next',
-            additionalContext: `Phase "${phaseName}" is complete!\n\nAll workpackages finished. Consider moving to the next phase.`
+            success: true,
+            message: text,
+            additionalContext: text,
+            status: 'no_next'
         };
     }
     // Some are blocked or in progress
     const blockedWps = registry.workpackages.filter((wp) => wp.status === 'blocked');
     if (blockedWps.length > 0) {
         const blockedNames = blockedWps.map((wp) => wp.id).join(', ');
+        const text = `No unblocked workpackages available.\n\nBlocked workpackages: ${blockedNames}\n\nRun /cf-plan blockers to see blocking dependencies.`;
         return {
-            status: 'no_next',
-            additionalContext: `No unblocked workpackages available.\n\nBlocked workpackages: ${blockedNames}\n\nRun /cf-plan blockers to see blocking dependencies.`
+            success: true,
+            message: text,
+            additionalContext: text,
+            status: 'no_next'
         };
     }
+    const text = 'No available workpackages to start. All are either in progress or complete.';
     return {
-        status: 'no_next',
-        additionalContext: 'No available workpackages to start. All are either in progress or complete.'
+        success: true,
+        message: text,
+        additionalContext: text,
+        status: 'no_next'
     };
 }
 /**
  * Main next operation
  */
 function findNext(options) {
-    const planRegistry = new registry_1.PlanRegistryManager(options.clearDir);
-    const wpRegistry = new registry_2.WorkpackageRegistryManager(options.clearDir);
+    const { clearSubdir } = (0, validation_1.resolveClearDir)(options.clearDir);
+    const planRegistry = new registry_1.PlanRegistryManager(clearSubdir);
+    const wpRegistry = new registry_2.WorkpackageRegistryManager(clearSubdir);
     // Load plan
     const plan = planRegistry.loadPlan();
     if (!plan) {
+        const text = 'No development plan found. Use /cf-init to create one.';
         return {
-            status: 'no_plan',
-            additionalContext: 'No development plan found. Use /cf-init to create one.'
+            success: false,
+            message: text,
+            additionalContext: text,
+            status: 'no_plan'
         };
     }
     // Get active phase
     const activePhase = planRegistry.getActivePhase();
     if (!activePhase) {
+        const text = 'No active phase found in plan';
         return {
+            success: false,
+            message: text,
+            additionalContext: text,
             status: 'error',
-            error: 'No active phase found in plan'
+            error: text
         };
     }
     // Check for current active workpackage
@@ -117,11 +135,15 @@ function findNext(options) {
         const completedWeight = currentWp.deliverables
             .filter(d => d.status === 'complete')
             .reduce((sum, d) => sum + d.weight, 0);
-        const progress = totalWeight > 0 ? completedWeight / totalWeight : 0;
+        // 0-100 percentage, matching calculateProgress's canonical scale.
+        const progress = totalWeight > 0 ? Math.round((completedWeight / totalWeight) * 100) : 0;
+        const text = formatContinueCurrent(currentWp.id, currentWp.title, progress);
         return {
+            success: true,
+            message: text,
+            additionalContext: text,
             status: 'current_incomplete',
-            currentWorkpackage: currentWp.id,
-            additionalContext: formatContinueCurrent(currentWp.id, currentWp.title, progress)
+            currentWorkpackage: currentWp.id
         };
     }
     // Get unblocked workpackages (already filtered by dependency validation)
@@ -146,13 +168,16 @@ function findNext(options) {
     }
     // Return the first available (highest priority by position)
     const nextWp = availableWps[0];
+    const text = formatNextRecommendation(nextWp.id, nextWp.title, currentWpId);
     return {
+        success: true,
+        message: text,
+        additionalContext: text,
         status: 'success',
         nextWorkpackage: nextWp.id,
         nextWorkpackageName: nextWp.title,
         nextWorkpackageSystemId: nextWp.systemId,
-        currentWorkpackage: currentWpId,
-        additionalContext: formatNextRecommendation(nextWp.id, nextWp.title, currentWpId)
+        currentWorkpackage: currentWpId
     };
 }
 // Main execution — only run when invoked directly
@@ -180,6 +205,9 @@ if (require.main === module) {
     catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         const result = {
+            success: false,
+            message: errorMessage,
+            additionalContext: errorMessage,
             status: 'error',
             error: errorMessage
         };

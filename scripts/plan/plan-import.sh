@@ -18,7 +18,7 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INPUT=$(cat)
 
 # Extract fields from input (with defaults)
-CWD=$(echo "$INPUT" | jq -r '.cwd // "."')
+CWD=$(canonicalize_cwd "$(echo "$INPUT" | jq -r '.cwd // "."')")
 PLAN_PATH=$(echo "$INPUT" | jq -r '.plan_path // ""')
 FORCE=$(echo "$INPUT" | jq -r '.force // "false"')
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"')

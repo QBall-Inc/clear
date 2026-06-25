@@ -1,15 +1,21 @@
 #!/bin/bash
-# session-finalize.sh - Finalize session state on Stop event
+# session-finalize.sh - Finalize session state on SessionEnd event
 #
-# Triggered by: Stop hook (via session-stop dispatcher)
+# Triggered by: SessionEnd hook (via scripts/dispatchers/session-end.sh)
+#   Note: Originally bound to Stop hook, but WP-R2.B1 (S97) moved finalize
+#   to SessionEnd because Stop fires after every Claude response turn,
+#   causing repeated mid-session "completed" status writes.
 # Input: JSON via stdin with session_id, cwd
-# Output: JSON (no additionalContext - Stop event cannot add context)
+# Output: JSON (no additionalContext — SessionEnd stdout is invisible to
+#   Claude per CC docs + S97-D1 empirical evidence; ratified by K2.7 P5
+#   pivot at commit 650e92e where the carry-over gate moved from
+#   SessionEnd → SessionStart for visibility)
 #
 # Updates:
-#   .clear/state/session.json - Final status
-#   .clear/state/session-history.json - Session end record
+#   .clear/state/session.json - Final status ("completed") + endTime
+#   .clear/state/session-history.json - Session end record (rollup row)
 #
-# Note: Per Claude Code platform limitation, Stop event hooks cannot
+# Note: Per Claude Code platform limitation, SessionEnd event hooks cannot
 # add additionalContext to the conversation. This script runs silently.
 
 export SCRIPT_NAME="session-finalize"
@@ -40,7 +46,9 @@ fi
 CURRENT_STATE=$(cat "$STATE_FILE")
 
 # Extract session info
-SESSION_NUMBER=$(echo "$CURRENT_STATE" | jq -r '.clearSessionNumber // 0')
+# Coerce to a number: SESSION_NUMBER feeds --argjson below, which aborts (under
+# set -e) on a non-numeric/empty value from a tampered state file. Default to 0.
+SESSION_NUMBER=$(echo "$CURRENT_STATE" | jq -r '(.clearSessionNumber // 0) | if type == "number" then . else 0 end')
 # shellcheck disable=SC2034  # Extracted from state for potential use
 START_TIME=$(echo "$CURRENT_STATE" | jq -r '.startTime // ""')
 PROMPT_COUNT=$(echo "$CURRENT_STATE" | jq -r '.tokenUsage.promptCount // 0')
@@ -61,14 +69,19 @@ jq --arg ts "$TIMESTAMP" \
     .endTime = $ts' \
    "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
 
-# Update session history
+# Update session history. Attribute stats to exactly ONE row — the row matching
+# this session's UUID AND logical number. Selecting on sessionId alone stamps the
+# same end/prompts/tokens onto every history row sharing the Claude UUID (a /resume
+# reuses the UUID), corrupting per-session analytics. Pairing sessionId with
+# clearSessionNumber pins the update to this finalized session's single row.
 if [ -f "$HISTORY_FILE" ]; then
   jq --arg sid "$SESSION_ID" \
+     --argjson num "$SESSION_NUMBER" \
      --arg ts "$TIMESTAMP" \
      --argjson prompts "$PROMPT_COUNT" \
      --arg tokens "${TOKEN_PERCENT}%" \
      --argjson handoff "$HANDOFF_PREPARED" \
-     '(.sessions[] | select(.sessionId == $sid)) |= . + {
+     '(.sessions[] | select(.sessionId == $sid and .clearSessionNumber == $num)) |= . + {
         "endTime": $ts,
         "status": "completed",
         "prompts": $prompts,
