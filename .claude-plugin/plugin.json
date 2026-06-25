@@ -1,6 +1,6 @@
 {
   "name": "clear",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Context Layered Engineering for Agentic Resources - Persistent memory and intelligent context management for Claude Code sessions",
   "author": {
     "name": "Ashay Kubal",

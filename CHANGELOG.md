@@ -20,6 +20,15 @@ Planned for upcoming releases:
 - **Harness adapters** — broader integration surfaces for orchestrating CLEAR
   alongside other tooling.
 
+## [1.0.1] - 2026-06-25
+
+### Fixed
+
+- **Hook scripts now ship executable.** The plugin's hook dispatcher scripts are
+  committed with the executable bit set (git mode `100755`), so hooks run correctly
+  after a marketplace or GitHub install. In 1.0.0 they were stored non-executable on
+  those install paths, causing every hook to fail with a "Permission denied" error.
+
 ## [1.0.0] - 2026-06-24
 
 First stable release. CLEAR delivers a complete, state-correct lifecycle surface:
