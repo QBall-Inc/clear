@@ -1,0 +1,534 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How CLEAR works — a living knowledge graph for coding agents</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Syne:wght@400;500;700;800&family=Instrument+Serif:ital@1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* =====================================================================
+   Tokens — verbatim from QBall design system
+   (packages/tokens/colors_and_type.css). Dark = charcoal default.
+   Laws honored: NO shadows (lift = border weight + tonal surface),
+   amber = the lone highlight (one capstone), radii <= 12, 8px spacing,
+   sage = all wayfinding, finance/data palette = data semantics only.
+   ===================================================================== */
+:root{
+  --font-display:'Fira Code','SF Mono','Cascadia Code',monospace;
+  --font-heading:'Fira Code','SF Mono','Cascadia Code',monospace;
+  --font-body:'Syne','Inter',system-ui,sans-serif;
+  --font-quote:'Instrument Serif','Georgia',serif;
+  --font-code:'JetBrains Mono','Fira Code','SF Mono',monospace;
+  --font-ui:'Fira Code','SF Mono',monospace;
+
+  --size-h1:56px; --size-h2:36px; --size-h3:24px; --size-h4:18px;
+  --size-body:16px; --size-quote:20px; --size-code:14px;
+  --size-caption:12px; --size-tag:11px;
+
+  --space-xs:4px; --space-sm:8px; --space-md:16px;
+  --space-lg:32px; --space-xl:64px; --space-2xl:128px;
+  --radius-sm:4px; --radius-md:8px; --radius-lg:12px;
+  --width-page:1200px; --width-body:720px;
+  --ease-out:cubic-bezier(0.22,1,0.36,1);
+  --ease-in-out:cubic-bezier(0.65,0,0.35,1);
+  --dur-fast:120ms; --dur-base:200ms; --dur-slow:360ms;
+}
+[data-theme="dark"]{
+  --bg:#1E1D1B; --surface:#2A2826;
+  --fg:#E7E0D6; --fg-secondary:#A8A29E; --fg-muted:#78716C;
+  --signal:#5B9E87; --highlight:#D97706;
+  --border-default:rgba(255,255,255,0.06); --border-strong:rgba(255,255,255,0.14);
+  --signal-bg:rgba(91,158,135,0.15); --highlight-bg:rgba(217,119,6,0.15);
+  --up:#4FB07A; --down:#E2705F; --warn:#D9B43C; --data-info:#5B9BD6; --flat:#A8A29E;
+  --up-bg:rgba(79,176,122,0.15); --down-bg:rgba(226,112,95,0.15);
+  --warn-bg:rgba(217,180,60,0.16); --data-info-bg:rgba(91,155,214,0.15);
+  --anno-source:#93A7B5; --anno-source-bg:rgba(147,167,181,0.16);
+}
+[data-theme="light"]{
+  --bg:#F7F3EE; --surface:#EDE8E1;
+  --fg:#141414; --fg-secondary:#57534E; --fg-muted:#78716C;
+  --signal:#3F6B5B; --highlight:#B45309;
+  --border-default:rgba(0,0,0,0.06); --border-strong:rgba(0,0,0,0.14);
+  --signal-bg:rgba(63,107,91,0.10); --highlight-bg:rgba(180,83,9,0.10);
+  --up:#2E7D4F; --down:#B5342B; --warn:#9A7D0F; --data-info:#2C6395; --flat:#78716C;
+  --up-bg:rgba(46,125,79,0.10); --down-bg:rgba(181,52,43,0.10);
+  --warn-bg:rgba(154,125,15,0.12); --data-info-bg:rgba(44,99,149,0.10);
+  --anno-source:#4E6577; --anno-source-bg:rgba(78,101,119,0.12);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{scrollbar-color:var(--fg-muted) var(--surface);scrollbar-width:thin}
+html,body{background:var(--bg);color:var(--fg-secondary);font-family:var(--font-body);
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+body{padding:var(--space-lg);line-height:1.75}
+.wrap{max-width:980px;margin:0 auto}
+
+/* ---------- masthead ---------- */
+.head{display:flex;justify-content:space-between;align-items:flex-end;gap:var(--space-md);
+  border-bottom:1px solid var(--border-default);padding-bottom:var(--space-md);flex-wrap:wrap}
+.eyebrow{font-family:var(--font-ui);font-size:var(--size-caption);letter-spacing:1.25px;
+  text-transform:uppercase;color:var(--fg-muted);margin-bottom:var(--space-sm)}
+.wordmark{font-family:var(--font-display);font-weight:700;font-size:34px;letter-spacing:-1.5px;color:var(--fg)}
+.wordmark .cursor{color:var(--signal)}
+.head .meta{font-family:var(--font-ui);font-size:var(--size-tag);color:var(--fg-muted);text-align:right;line-height:1.7}
+.toggle{font-family:var(--font-ui);font-size:var(--size-tag);color:var(--fg-secondary);
+  border:1px solid var(--border-strong);background:var(--surface);border-radius:var(--radius-sm);
+  padding:6px 10px;cursor:pointer;transition:border-color var(--dur-base) var(--ease-out)}
+.toggle:hover{border-color:var(--signal)}
+
+/* ---------- thesis ---------- */
+.thesis{margin:var(--space-xl) 0 var(--space-md)}
+.thesis h1{font-family:var(--font-display);font-weight:700;font-size:clamp(30px,5vw,var(--size-h1));
+  line-height:1.02;letter-spacing:-2px;color:var(--fg);max-width:16ch}
+.thesis h1 .sig{color:var(--signal)}
+.lede{font-family:var(--font-body);font-size:var(--size-h4);line-height:1.6;color:var(--fg-secondary);
+  max-width:62ch;margin-top:var(--space-md)}
+.lede strong{font-weight:500;color:var(--fg)}
+
+/* ---------- the rail of steps ---------- */
+.rail{margin-top:var(--space-xl);display:flex;flex-direction:column}
+.connector{font-family:var(--font-ui);font-size:var(--size-tag);letter-spacing:.12em;
+  color:var(--fg-muted);text-align:center;padding:var(--space-sm) 0;text-transform:lowercase}
+.connector::before{content:"↓  "}
+
+.step{border:1px solid var(--border-default);border-left:3px solid var(--signal);
+  border-radius:var(--radius-lg);background:var(--surface);padding:var(--space-lg)}
+.step.cap{border-left-color:var(--highlight)}
+
+.step-top{display:flex;align-items:baseline;gap:var(--space-md);flex-wrap:wrap;margin-bottom:var(--space-md)}
+.num{font-family:var(--font-display);font-weight:700;font-size:var(--size-tag);color:var(--signal);
+  border:1px solid var(--signal);border-radius:var(--radius-sm);padding:2px 8px;min-width:30px;text-align:center}
+.step.cap .num{color:var(--highlight);border-color:var(--highlight)}
+.step-name{font-family:var(--font-heading);font-weight:600;font-size:var(--size-h3);
+  letter-spacing:-.5px;color:var(--fg)}
+.step-tag{font-family:var(--font-ui);font-size:var(--size-tag);color:var(--fg-muted);margin-left:auto;
+  letter-spacing:.04em;text-align:right}
+.prose{font-size:15px;line-height:1.7;color:var(--fg-secondary);max-width:70ch}
+.prose strong{font-weight:500;color:var(--fg);font-family:inherit}
+.prose code{font-family:var(--font-code);font-size:13px;color:var(--fg);
+  background:var(--signal-bg);padding:1px 6px;border-radius:var(--radius-sm)}
+.prose + .prose{margin-top:var(--space-sm)}
+
+/* ===== step 1: problem — the cold-start strip ===== */
+.coldstart{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--space-sm);margin-top:var(--space-md)}
+@media(max-width:680px){.coldstart{grid-template-columns:1fr}}
+.cs{border:1px solid var(--border-default);border-radius:var(--radius-md);background:var(--bg);
+  padding:var(--space-md)}
+.cs .h{font-family:var(--font-ui);font-size:var(--size-tag);text-transform:uppercase;letter-spacing:.08em;
+  color:var(--down);margin-bottom:var(--space-xs)}
+.cs .d{font-size:13px;color:var(--fg-secondary);line-height:1.55}
+
+/* ===== step 2: the concept-file card ===== */
+.filecard{margin-top:var(--space-md);border:1px solid var(--border-default);border-radius:var(--radius-md);
+  background:var(--bg);overflow:hidden;max-width:640px}
+.filecard .bar{display:flex;align-items:center;gap:var(--space-sm);padding:8px 14px;
+  border-bottom:1px solid var(--border-default);background:var(--surface)}
+.filecard .bar .fn{font-family:var(--font-ui);font-size:12px;color:var(--fg-secondary)}
+.filecard .bar .ty{margin-left:auto;font-family:var(--font-ui);font-size:10px;color:var(--signal)}
+.filecard pre{font-family:var(--font-code);font-size:12.5px;line-height:1.7;color:var(--fg);
+  padding:16px 18px;white-space:pre;overflow-x:auto}
+.fm-k{color:var(--signal)}        /* frontmatter key */
+.fm-v{color:var(--fg)}            /* value */
+.fm-c{color:var(--fg-muted)}      /* comment */
+.fm-status{color:var(--up)}
+.fm-bind{color:var(--data-info)}
+
+/* ===== step 3: the seven types ===== */
+.types{display:grid;grid-template-columns:repeat(2,1fr);gap:var(--space-sm);margin-top:var(--space-md)}
+@media(max-width:680px){.types{grid-template-columns:1fr}}
+.type{display:grid;grid-template-columns:auto 1fr;gap:var(--space-md);align-items:center;
+  border:1px solid var(--border-default);border-radius:var(--radius-md);background:var(--bg);padding:12px 14px}
+.type .pfx{font-family:var(--font-display);font-weight:700;font-size:12px;color:var(--signal);
+  border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:3px 7px;min-width:46px;text-align:center}
+.type .tx .n{font-size:13.5px;color:var(--fg);font-weight:500;font-family:var(--font-body)}
+.type .tx .e{font-size:11.5px;color:var(--fg-muted);line-height:1.4}
+
+/* ===== step 4: the lifecycle (the heart, animated) ===== */
+.lifecycle{margin-top:var(--space-md)}
+.track{display:flex;align-items:stretch;gap:0;flex-wrap:wrap;
+  border:1px solid var(--border-default);border-radius:var(--radius-md);background:var(--bg);
+  padding:var(--space-md);gap:var(--space-sm)}
+.state{flex:1 1 0;min-width:120px;border:1px solid var(--border-default);border-radius:var(--radius-sm);
+  padding:12px;background:var(--surface);transition:border-color var(--dur-slow) var(--ease-out),
+  background var(--dur-slow) var(--ease-out),opacity var(--dur-slow) var(--ease-out);opacity:.5}
+.state.lit{opacity:1}
+.state .nm{font-family:var(--font-ui);font-size:12px;font-weight:600;letter-spacing:.04em;margin-bottom:4px}
+.state .ds{font-size:11px;color:var(--fg-muted);line-height:1.45}
+.state.pending  .nm{color:var(--warn)}     .state.pending.lit{border-color:var(--warn);background:var(--warn-bg)}
+.state.active   .nm{color:var(--up)}        .state.active.lit{border-color:var(--up);background:var(--up-bg)}
+.state.superseded .nm{color:var(--data-info)} .state.superseded.lit{border-color:var(--data-info);background:var(--data-info-bg)}
+.state.deprecated .nm{color:var(--flat)}    .state.deprecated.lit{border-color:var(--flat)}
+.state.archived .nm{color:var(--fg-muted)}  .state.archived.lit{border-color:var(--border-strong)}
+
+.demo{margin-top:var(--space-md);display:grid;grid-template-columns:1fr;gap:var(--space-sm);
+  border:1px solid var(--border-default);border-radius:var(--radius-md);background:var(--bg);padding:var(--space-md)}
+.demo-head{font-family:var(--font-ui);font-size:var(--size-tag);text-transform:uppercase;letter-spacing:.08em;
+  color:var(--fg-muted);display:flex;justify-content:space-between;align-items:center}
+.demo-head .live{color:var(--signal)}
+.concept{display:grid;grid-template-columns:46px 1fr auto;gap:var(--space-md);align-items:center;
+  border:1px solid var(--border-default);border-left-width:3px;border-radius:var(--radius-sm);
+  padding:10px 12px;background:var(--surface);
+  transition:opacity var(--dur-slow) var(--ease-out),border-color var(--dur-slow) var(--ease-out),
+             filter var(--dur-slow) var(--ease-out)}
+.concept .id{font-family:var(--font-display);font-weight:700;font-size:11px;color:var(--fg-muted);text-align:center}
+.concept .ti{font-size:13px;color:var(--fg);font-weight:500;font-family:var(--font-body)}
+.concept .fp{font-family:var(--font-code);font-size:10.5px;color:var(--fg-muted)}
+.badge{font-family:var(--font-ui);font-size:10px;font-weight:600;letter-spacing:.06em;
+  padding:3px 9px;border-radius:var(--radius-sm);border:1px solid currentColor;white-space:nowrap;
+  transition:color var(--dur-slow),background var(--dur-slow)}
+.b-pending{color:var(--warn);background:var(--warn-bg)}
+.b-active{color:var(--up);background:var(--up-bg)}
+.b-superseded{color:var(--data-info);background:var(--data-info-bg)}
+.b-deprecated{color:var(--flat)}
+.concept.c-active{border-left-color:var(--up)}
+.concept.c-pending{border-left-color:var(--warn)}
+.concept.c-superseded{border-left-color:var(--data-info)}
+.concept.c-deprecated{border-left-color:var(--flat)}
+.concept.stale{filter:grayscale(.5);opacity:.55}
+.concept .note{grid-column:1/-1;font-family:var(--font-ui);font-size:10px;color:var(--data-info);
+  padding-left:58px;max-height:0;opacity:0;overflow:hidden;transition:max-height var(--dur-slow),opacity var(--dur-slow)}
+.concept .note.dep{color:var(--flat)}
+.concept .note.on{max-height:24px;opacity:1}
+.caption-line{font-size:12.5px;color:var(--fg-secondary);min-height:20px;font-family:var(--font-body)}
+.caption-line .mk{font-family:var(--font-ui);color:var(--signal);font-weight:600}
+
+/* ===== step 5: the loop ===== */
+.loopgrid{margin-top:var(--space-md);display:grid;grid-template-columns:1.1fr .9fr;gap:var(--space-lg);align-items:center}
+@media(max-width:760px){.loopgrid{grid-template-columns:1fr}}
+svg{width:100%;height:auto;display:block;overflow:visible}
+.lp rect{fill:var(--surface);stroke:var(--border-strong);stroke-width:1.4;
+  transition:stroke var(--dur-base),fill var(--dur-base)}
+.lp.on rect{stroke:var(--signal);fill:var(--signal-bg)}
+.lp .t{fill:var(--fg);font-family:var(--font-display);font-size:13px;font-weight:600}
+.lp .s{fill:var(--fg-muted);font-family:var(--font-ui);font-size:8.5px;letter-spacing:.04em}
+.lp.on .s{fill:var(--fg-secondary)}
+.ed{fill:none;stroke:var(--fg-muted);stroke-width:1.4;marker-end:url(#ar)}
+.ed.dash{stroke-dasharray:4 4;stroke:var(--border-strong)}
+.kgc circle{fill:var(--bg);stroke:var(--signal);stroke-width:1.5}
+.kgc text{fill:var(--signal);font-family:var(--font-ui);font-size:9px;letter-spacing:.04em}
+.kgc .sub{fill:var(--fg-muted);font-size:8px}
+.loop-legend{font-size:13px;line-height:1.7;color:var(--fg-secondary)}
+.loop-legend li{list-style:none;margin-bottom:var(--space-sm);padding-left:18px;position:relative}
+.loop-legend li::before{content:"›";position:absolute;left:0;color:var(--signal);font-family:var(--font-ui)}
+.loop-legend b{color:var(--fg);font-weight:500;font-family:var(--font-ui);font-size:12px}
+
+/* ===== step 6 (cap): OKF convergence ===== */
+.layers{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--space-sm);margin-top:var(--space-md)}
+@media(max-width:760px){.layers{grid-template-columns:1fr}}
+.lyr{border:1px solid var(--border-default);border-radius:var(--radius-md);background:var(--bg);padding:var(--space-md)}
+.lyr .k{font-family:var(--font-ui);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--fg-muted)}
+.lyr .nm{font-family:var(--font-display);font-weight:600;font-size:16px;color:var(--fg);margin:6px 0 2px}
+.lyr .who{font-family:var(--font-ui);font-size:11px;color:var(--fg-muted);font-weight:400}
+.lyr .d{font-size:12.5px;color:var(--fg-secondary);line-height:1.55}
+.lyr.you{border-color:var(--highlight);background:var(--highlight-bg)}
+.lyr.you .nm{color:var(--highlight)}
+
+.pullquote{font-family:var(--font-quote);font-style:italic;font-size:var(--size-quote);line-height:1.45;
+  color:var(--fg);border-left:3px solid var(--highlight);padding-left:var(--space-md);
+  margin:var(--space-xl) 0 var(--space-md);max-width:54ch}
+
+.foot{font-family:var(--font-ui);font-size:10px;color:var(--fg-muted);letter-spacing:.04em;
+  margin-top:var(--space-lg);border-top:1px solid var(--border-default);padding-top:var(--space-md);
+  display:flex;justify-content:space-between;gap:var(--space-md);flex-wrap:wrap}
+.foot b{color:var(--signal);font-weight:600}
+.foot .ctrl{display:flex;gap:var(--space-sm)}
+.replay{font-family:var(--font-ui);font-size:10px;color:var(--fg-secondary);background:var(--surface);
+  border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:5px 11px;cursor:pointer;
+  letter-spacing:.04em;transition:border-color var(--dur-base)}
+.replay:hover{border-color:var(--signal)}
+
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{
+  animation-duration:.001ms!important;transition-duration:.001ms!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="head">
+    <div>
+      <div class="eyebrow">Context Layering &amp; Engineering for Agentic Resources</div>
+      <div class="wordmark">CLEAR<span class="cursor">_</span></div>
+    </div>
+    <div style="display:flex;align-items:flex-end;gap:var(--space-md)">
+      <div class="meta">v1.0 · Apache-2.0<br>Claude Code plugin<br>github.com/QBall-Inc/clear</div>
+      <button class="toggle" onclick="document.documentElement.dataset.theme=document.documentElement.dataset.theme==='dark'?'light':'dark'">light / dark</button>
+    </div>
+  </header>
+
+  <section class="thesis">
+    <h1>How CLEAR keeps an agent's memory <span class="sig">honest</span>.</h1>
+    <p class="lede">A markdown memory for coding agents is the easy part. Keeping it from rotting —
+      pruning what's no longer true as the code moves on — is the hard part. Here's the whole
+      system, <strong>one layer at a time</strong>, in the order each piece depends on the last.</p>
+  </section>
+
+  <div class="rail">
+
+    <!-- 1 · PROBLEM -->
+    <section class="step">
+      <div class="step-top">
+        <span class="num">1</span><span class="step-name">The problem</span>
+        <span class="step-tag">why agents drift on long projects</span>
+      </div>
+      <p class="prose">On anything bigger than a weekend project, a coding agent loses the plot. It starts
+        every session cold, re-derives decisions you already made, and — the worst failure — confidently
+        acts on guidance that <strong>stopped being true three commits ago</strong>. A memory that never
+        forgets the wrong things isn't memory; it's a liability.</p>
+      <div class="coldstart">
+        <div class="cs"><div class="h">cold start</div><div class="d">Session N+1 begins with none of session N's context. You re-explain the architecture every morning.</div></div>
+        <div class="cs"><div class="h">re-derivation</div><div class="d">The same decisions get rediscovered (and sometimes reversed) because nothing recorded them.</div></div>
+        <div class="cs"><div class="h">stale guidance</div><div class="d">Old patterns resurface after they've been superseded. A confidently wrong agent is worse than a forgetful one.</div></div>
+      </div>
+    </section>
+
+    <div class="connector">the fix starts with the atom of knowledge</div>
+
+    <!-- 2 · A CONCEPT IS A FILE -->
+    <section class="step">
+      <div class="step-top">
+        <span class="num">2</span><span class="step-name">A concept is a file</span>
+        <span class="step-tag">typed markdown, bound to code</span>
+      </div>
+      <p class="prose">The unit of knowledge is one markdown file with structured frontmatter. The frontmatter
+        is the machine-read contract; the body is human detail. No database, no server — just diffable files
+        in your repo, reviewed in the same PR as the code. The <code>related_files</code> list is what binds a
+        concept to the code it concerns, so <strong>touch a bound file and its concepts surface automatically</strong>.</p>
+      <div class="filecard">
+        <div class="bar"><span class="fn">.clear/knowledge/TD-014.md</span><span class="ty">technical-decision</span></div>
+<pre><span class="fm-c">---</span>
+<span class="fm-k">id</span>:            TD-014
+<span class="fm-k">title</span>:         Use cursor-based pagination for the public API
+<span class="fm-k">type</span>:          technical-decision
+<span class="fm-k">status</span>:        <span class="fm-status">active</span>
+<span class="fm-k">tags</span>:          [api, pagination, performance]
+<span class="fm-k">related_files</span>: <span class="fm-bind">[ src/api/list-handler.ts, src/api/cursor.ts ]</span>
+<span class="fm-k">description</span>:   Offset pagination broke under deep page loads; cursors are stable.
+<span class="fm-c">---</span></pre>
+      </div>
+    </section>
+
+    <div class="connector">every concept is one of seven kinds</div>
+
+    <!-- 3 · THE SEVEN TYPES -->
+    <section class="step">
+      <div class="step-top">
+        <span class="num">3</span><span class="step-name">Seven knowledge types</span>
+        <span class="step-tag">closed set, on purpose</span>
+      </div>
+      <p class="prose">The type isn't a free-text tag — it's a closed, opinionated set, because a known type is what
+        lets the system treat a decision differently from a process or a lesson. Code is the first domain, not the only one
+        (people, orgs, and events are on the roadmap).</p>
+      <div class="types">
+        <div class="type"><span class="pfx">TD</span><div class="tx"><div class="n">Technical decision</div><div class="e">e.g. "Adopt JWT over session cookies for the gateway" — the call, and the alternatives weighed.</div></div></div>
+        <div class="type"><span class="pfx">PAT</span><div class="tx"><div class="n">Architectural pattern</div><div class="e">e.g. "Repository pattern wraps every data source" — a reusable structure in the codebase.</div></div></div>
+        <div class="type"><span class="pfx">LES</span><div class="tx"><div class="n">Lesson learned</div><div class="e">e.g. "The MCP server dropped tools over 200 — paginate the registry" — a pitfall found the hard way.</div></div></div>
+        <div class="type"><span class="pfx">BR</span><div class="tx"><div class="n">Business rule</div><div class="e">e.g. "Refunds are blocked after 90 days" — a domain rule the software must honor.</div></div></div>
+        <div class="type"><span class="pfx">IW</span><div class="tx"><div class="n">Institutional wiki</div><div class="e">Reference knowledge sourced from a canonical doc — the RFC, the runbook, the spec.</div></div></div>
+        <div class="type"><span class="pfx">PROC</span><div class="tx"><div class="n">Process</div><div class="e">A recurring procedure: its trigger, frequency, and steps — e.g. the release checklist.</div></div></div>
+        <div class="type" style="grid-column:1/-1"><span class="pfx">SH</span><div class="tx"><div class="n">Stakeholder</div><div class="e">A person, team, service, or vendor, and what it owns — e.g. "Auth service · owned by Platform team."</div></div></div>
+      </div>
+    </section>
+
+    <div class="connector">the part a plain markdown wiki leaves out</div>
+
+    <!-- 4 · THE LIFECYCLE (heart, animated) -->
+    <section class="step">
+      <div class="step-top">
+        <span class="num">4</span><span class="step-name">The lifecycle</span>
+        <span class="step-tag">the dimension OKF scopes out · animated below</span>
+      </div>
+      <p class="prose">This is the heart. Every concept carries a <strong>status</strong>, and that is what keeps the graph
+        fresh instead of rotting. When a newer decision lands, the old one is <strong>superseded</strong> (link recorded both
+        ways). When something simply stops being true, it's <strong>deprecated</strong>. Neither is deleted — both are
+        <strong>surfaced as stale</strong>, so an agent is never silently handed dead guidance.</p>
+      <div class="lifecycle">
+        <div class="track" id="track">
+          <div class="state pending"   data-s="pending"><div class="nm">pending</div><div class="ds">captured, provisional — awaiting review</div></div>
+          <div class="state active"    data-s="active"><div class="nm">active</div><div class="ds">confirmed, in force — eligible to surface</div></div>
+          <div class="state superseded" data-s="superseded"><div class="nm">superseded</div><div class="ds">replaced by a newer concept — link both ways</div></div>
+          <div class="state deprecated" data-s="deprecated"><div class="nm">deprecated</div><div class="ds">no longer true — kept, surfaced as stale</div></div>
+          <div class="state archived"  data-s="archived"><div class="nm">archived</div><div class="ds">removed from surfacing — terminal</div></div>
+        </div>
+
+        <div class="demo">
+          <div class="demo-head"><span>live example · src/api/list-handler.ts</span><span class="live" id="liveTag">watching</span></div>
+          <div class="concept c-active" id="c-pat">
+            <div class="id">PAT<br>006</div>
+            <div><div class="ti">Repository pattern wraps every data source</div><div class="fp">↳ src/api/list-handler.ts</div></div>
+            <div class="badge b-active">active</div>
+          </div>
+          <div class="concept c-active" id="c-old">
+            <div class="id">TD<br>009</div>
+            <div><div class="ti">Offset pagination for the public API</div><div class="fp">↳ src/api/list-handler.ts</div></div>
+            <div class="badge b-active">active</div>
+            <div class="note" id="note-old">↳ superseded by TD-014 · surfaced as stale</div>
+          </div>
+          <div class="concept c-active" id="c-new" style="opacity:0">
+            <div class="id">TD<br>014</div>
+            <div><div class="ti">Cursor-based pagination for the public API</div><div class="fp">↳ src/api/list-handler.ts</div></div>
+            <div class="badge b-pending">pending</div>
+          </div>
+          <div class="caption-line" id="lcCap"><span class="mk">›</span> Press replay to watch a decision get captured, promoted, and supersede the old one.</div>
+        </div>
+      </div>
+    </section>
+
+    <div class="connector">but who writes and prunes all this? the loop does</div>
+
+    <!-- 5 · THE LOOP -->
+    <section class="step">
+      <div class="step-top">
+        <span class="num">5</span><span class="step-name">The loop that drives it</span>
+        <span class="step-tag">plan → schedule → act → manage</span>
+      </div>
+      <p class="prose">You never maintain the knowledge base as a side chore. A structured development loop is the engine:
+        the <strong>act</strong> phase captures decisions and lessons as you build; the <strong>manage</strong> phase, at session
+        handoff, is what triggers supersession and pruning. <strong>Building the software maintains the graph.</strong></p>
+      <div class="loopgrid">
+        <svg viewBox="0 0 380 300" role="img" aria-label="plan, schedule, act and manage feeding a knowledge graph">
+          <defs>
+            <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="currentColor"></path>
+            </marker>
+          </defs>
+          <path class="ed" d="M104,46 L168,46"></path>
+          <path class="ed" d="M264,66 Q300,90 264,112"></path>
+          <path class="ed" d="M168,132 L104,132"></path>
+          <path class="ed dash" id="cap" d="M128,154 Q128,200 176,222"></path>
+          <path class="ed dash" id="prune" d="M82,154 Q48,214 168,234"></path>
+          <path class="ed dash" id="serve" d="M268,228 Q322,176 150,140"></path>
+
+          <g class="lp" id="lp-plan" transform="translate(28,26)"><rect width="76" height="40" rx="8"/><text class="t" x="38" y="20" text-anchor="middle">plan</text><text class="s" x="38" y="32" text-anchor="middle">phases</text></g>
+          <g class="lp" id="lp-sched" transform="translate(180,26)"><rect width="84" height="40" rx="8"/><text class="t" x="42" y="20" text-anchor="middle">schedule</text><text class="s" x="42" y="32" text-anchor="middle">workpackages</text></g>
+          <g class="lp" id="lp-act" transform="translate(104,112)"><rect width="76" height="40" rx="8"/><text class="t" x="38" y="20" text-anchor="middle">act</text><text class="s" x="38" y="32" text-anchor="middle">build</text></g>
+          <g class="lp" id="lp-manage" transform="translate(20,112)"><rect width="84" height="40" rx="8"/><text class="t" x="42" y="20" text-anchor="middle">manage</text><text class="s" x="42" y="32" text-anchor="middle">handoff</text></g>
+
+          <g class="kgc" transform="translate(212,196)"><circle cx="40" cy="30" r="38"/><text x="40" y="27" text-anchor="middle">knowledge</text><text x="40" y="38" text-anchor="middle">graph</text><text class="sub" x="40" y="50" text-anchor="middle">.clear/ markdown</text></g>
+        </svg>
+        <ul class="loop-legend">
+          <li><b>plan</b> — capture intent as phases CLEAR tracks across sessions.</li>
+          <li><b>schedule</b> — break it into trackable workpackages.</li>
+          <li><b>act</b> — build; decisions &amp; lessons are captured here, bound to the files you touch.</li>
+          <li><b>manage</b> — session handoff; the loop's progression supersedes &amp; prunes.</li>
+          <li style="color:var(--fg-muted)">the graph then serves the right context back into the next <b style="color:var(--fg-muted)">act</b>.</li>
+        </ul>
+      </div>
+    </section>
+
+    <div class="connector">how this lines up with google's new spec</div>
+
+    <!-- 6 · CAP: OKF CONVERGENCE -->
+    <section class="step cap">
+      <div class="step-top">
+        <span class="num">6</span><span class="step-name">Where OKF fits</span>
+        <span class="step-tag">convergence, not a priority claim</span>
+      </div>
+      <p class="prose">In June 2026 Google open-sourced the <strong>Open Knowledge Format</strong> — a draft spec for typed,
+        resource-bound, markdown-native knowledge. It validates the model CLEAR has been running since 2025. The honest read is
+        three layers: OKF specifies a <strong>format</strong>; CKS adds the <strong>lifecycle</strong>; CLEAR is the
+        <strong>engine</strong> that lives it.</p>
+      <div class="layers">
+        <div class="lyr"><div class="k">Layer 1 · format</div><div class="nm">OKF <span class="who">— Google, v0.1</span></div><div class="d">Typed, described, tagged, resource-bound, cross-linked markdown. Status, supersession and pruning are explicitly out of scope.</div></div>
+        <div class="lyr"><div class="k">Layer 2 · + lifecycle</div><div class="nm">CKS <span class="who">— the CLEAR spec</span></div><div class="d">Format parity, plus opinionated types and the full lifecycle: status, supersession, deprecation surfacing, pruning, provenance.</div></div>
+        <div class="lyr you"><div class="k">Layer 3 · the engine</div><div class="nm">CLEAR <span class="who">— shipped 2025</span></div><div class="d">Captures during development, serves the right context at the right time, syncs knowledge to project state. The system that runs the spec.</div></div>
+      </div>
+    </section>
+
+  </div>
+
+  <blockquote class="pullquote">The graph gives structure to traverse. The lifecycle keeps it true. Building the software maintains both.</blockquote>
+
+  <div class="foot">
+    <span>github.com/<b>QBall-Inc/clear</b> · Apache-2.0 · coding agents first, ported next</span>
+    <span class="ctrl"><button class="replay" id="replay">↻ replay lifecycle</button></span>
+  </div>
+
+</div>
+
+<script>
+(function(){
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const $=(s,r=document)=>r.querySelector(s);
+  const wait=ms=>new Promise(r=>setTimeout(r,reduce?Math.min(ms,100):ms));
+
+  const states={};
+  document.querySelectorAll('.state').forEach(el=>states[el.dataset.s]=el);
+  const cNew=$('#c-new'), cOld=$('#c-old'), noteOld=$('#note-old');
+  const badgeNew=$('#c-new .badge'), badgeOld=$('#c-old .badge');
+  const cap=$('#lcCap'), liveTag=$('#liveTag');
+
+  function lit(s){ Object.values(states).forEach(e=>e.classList.remove('lit')); if(states[s]) states[s].classList.add('lit'); }
+  function setCap(html){ cap.innerHTML='<span class="mk">›</span> '+html; }
+  function setBadge(el,cls,txt){ el.className='badge '+cls; el.textContent=txt; }
+
+  function reset(){
+    Object.values(states).forEach(e=>e.classList.remove('lit'));
+    cNew.style.opacity='0';
+    setBadge(badgeNew,'b-pending','pending');
+    cOld.classList.remove('stale'); cOld.classList.remove('c-superseded'); cOld.classList.add('c-active');
+    setBadge(badgeOld,'b-active','active');
+    noteOld.classList.remove('on');
+    liveTag.textContent='watching';
+  }
+
+  // loop nodes (subtle accent during the lifecycle act phase)
+  const lpAct=$('#lp-act');
+
+  async function run(){
+    reset();
+    await wait(400);
+
+    // 1. base state: PAT-006 + TD-009 active. Light "active".
+    lit('active');
+    setCap('Two active concepts are bound to <code style="font-family:var(--font-code)">list-handler.ts</code>.');
+    await wait(1400);
+
+    // 2. act: a new decision is captured as pending
+    if(lpAct) lpAct.classList.add('on');
+    liveTag.textContent='act · capturing';
+    lit('pending');
+    cNew.style.opacity='1';
+    setCap('You switch to cursor pagination. <b style="color:var(--warn)">TD-014</b> is captured as <b style="color:var(--warn)">pending</b>.');
+    await wait(1800);
+
+    // 3. promote pending -> active
+    liveTag.textContent='review';
+    lit('active');
+    setBadge(badgeNew,'b-active','active');
+    setCap('Reviewed and promoted: <b style="color:var(--up)">pending → active</b>.');
+    await wait(1700);
+
+    // 4. supersede the old one
+    liveTag.textContent='manage · pruning';
+    lit('superseded');
+    cOld.classList.remove('c-active'); cOld.classList.add('c-superseded','stale');
+    setBadge(badgeOld,'b-superseded','superseded');
+    noteOld.classList.add('on');
+    setCap('<b style="color:var(--data-info)">TD-009 → superseded</b> by TD-014. Recorded both ways, surfaced as stale.');
+    await wait(2000);
+
+    // 5. settle: deprecated/archived states explained, freshness achieved
+    lit('deprecated');
+    setCap('Nothing was deleted. The old decision stays for history — the agent now gets the <b style="color:var(--up)">fresh</b> one first.');
+    await wait(1900);
+
+    lit('active');
+    if(lpAct) lpAct.classList.remove('on');
+    liveTag.textContent='fresh';
+    setCap('The graph pruned itself. You wrote code; the knowledge stayed honest.');
+  }
+
+  $('#replay').addEventListener('click',run);
+
+  let started=false; const start=()=>{ if(started)return; started=true; run(); };
+  if('IntersectionObserver' in window){
+    const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting)start();}),{threshold:.4});
+    io.observe($('.lifecycle'));
+  } else start();
+  setTimeout(start,2500);
+})();
+</script>
+</body>
+</html>

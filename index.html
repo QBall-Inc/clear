@@ -1,0 +1,732 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How CLEAR works — slide deck</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Syne:wght@400;500;700;800&family=Instrument+Serif:ital@1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* =====================================================================
+   Tokens — verbatim from QBall design system (packages/tokens).
+   Laws: NO shadows (lift = border + tonal surface), amber = lone
+   highlight, radii <= 12, 8px spacing, sage = wayfinding,
+   data palette = data semantics only.
+   ===================================================================== */
+:root{
+  --font-display:'Fira Code','SF Mono','Cascadia Code',monospace;
+  --font-heading:'Fira Code','SF Mono','Cascadia Code',monospace;
+  --font-body:'Syne','Inter',system-ui,sans-serif;
+  --font-quote:'Instrument Serif','Georgia',serif;
+  --font-code:'JetBrains Mono','Fira Code','SF Mono',monospace;
+  --font-ui:'Fira Code','SF Mono',monospace;
+
+  --space-xs:4px; --space-sm:8px; --space-md:16px;
+  --space-lg:32px; --space-xl:64px; --space-2xl:128px;
+  --radius-sm:4px; --radius-md:8px; --radius-lg:12px;
+  --ease-out:cubic-bezier(0.22,1,0.36,1);
+  --ease-in-out:cubic-bezier(0.65,0,0.35,1);
+  --dur-fast:120ms; --dur-base:200ms; --dur-slow:360ms;
+
+  /* fluid type — scales with viewport so slides fill large screens */
+  --fs-mega:clamp(40px, 7.2vw, 104px);
+  --fs-h1:clamp(30px, 4.6vw, 68px);
+  --fs-h2:clamp(22px, 2.8vw, 40px);
+  --fs-lede:clamp(17px, 1.9vw, 30px);
+  --fs-body:clamp(15px, 1.35vw, 21px);
+  --fs-sm:clamp(13px, 1.05vw, 17px);
+  --fs-tag:clamp(11px, 0.85vw, 14px);
+  --fs-code:clamp(12px, 1.05vw, 17px);
+}
+[data-theme="dark"]{
+  --bg:#1E1D1B; --surface:#2A2826;
+  --fg:#E7E0D6; --fg-secondary:#A8A29E; --fg-muted:#78716C;
+  --signal:#5B9E87; --highlight:#D97706;
+  --border-default:rgba(255,255,255,0.06); --border-strong:rgba(255,255,255,0.14);
+  --signal-bg:rgba(91,158,135,0.15); --highlight-bg:rgba(217,119,6,0.15);
+  --up:#4FB07A; --down:#E2705F; --warn:#D9B43C; --data-info:#5B9BD6; --flat:#A8A29E;
+  --up-bg:rgba(79,176,122,0.15); --down-bg:rgba(226,112,95,0.15);
+  --warn-bg:rgba(217,180,60,0.16); --data-info-bg:rgba(91,155,214,0.15);
+}
+[data-theme="light"]{
+  --bg:#F7F3EE; --surface:#EDE8E1;
+  --fg:#141414; --fg-secondary:#57534E; --fg-muted:#78716C;
+  --signal:#3F6B5B; --highlight:#B45309;
+  --border-default:rgba(0,0,0,0.06); --border-strong:rgba(0,0,0,0.14);
+  --signal-bg:rgba(63,107,91,0.10); --highlight-bg:rgba(180,83,9,0.10);
+  --up:#2E7D4F; --down:#B5342B; --warn:#9A7D0F; --data-info:#2C6395; --flat:#78716C;
+  --up-bg:rgba(46,125,79,0.10); --down-bg:rgba(181,52,43,0.10);
+  --warn-bg:rgba(154,125,15,0.12); --data-info-bg:rgba(44,99,149,0.10);
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--fg-secondary);font-family:var(--font-body);
+  -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;overflow:hidden}
+
+/* ---------- deck shell ---------- */
+.deck{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+.slide{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;
+  padding:clamp(40px,6vh,90px) clamp(48px,7vw,180px);
+  opacity:0;visibility:hidden;transform:translateY(8px) scale(.995);
+  transition:opacity var(--dur-slow) var(--ease-out),
+             transform var(--dur-slow) var(--ease-out),
+             visibility 0s linear var(--dur-slow)}
+.slide.active{opacity:1;visibility:visible;transform:none;
+  transition:opacity var(--dur-slow) var(--ease-out),transform var(--dur-slow) var(--ease-out)}
+.slide-inner{width:100%;max-width:1500px;margin:0 auto}
+
+/* slide chrome: eyebrow + number */
+.kicker{display:flex;align-items:center;gap:var(--space-md);margin-bottom:var(--space-lg);flex-wrap:wrap}
+.knum{font-family:var(--font-display);font-weight:700;font-size:var(--fs-tag);color:var(--signal);
+  border:1px solid var(--signal);border-radius:var(--radius-sm);padding:3px 10px}
+.slide.cap .knum{color:var(--highlight);border-color:var(--highlight)}
+.kname{font-family:var(--font-heading);font-weight:600;font-size:var(--fs-h2);letter-spacing:-1px;color:var(--fg)}
+.ktag{font-family:var(--font-ui);font-size:var(--fs-tag);color:var(--fg-muted);margin-left:auto;
+  letter-spacing:.04em;text-align:right}
+
+.prose{font-size:var(--fs-body);line-height:1.65;color:var(--fg-secondary);max-width:80ch}
+.prose strong{font-weight:500;color:var(--fg)}
+.prose code{font-family:var(--font-code);font-size:.92em;color:var(--fg);
+  background:var(--signal-bg);padding:1px 7px;border-radius:var(--radius-sm)}
+
+/* ================= TITLE SLIDE ================= */
+.title-slide .eyebrow{font-family:var(--font-ui);font-size:var(--fs-tag);letter-spacing:1.5px;
+  text-transform:uppercase;color:var(--fg-muted);margin-bottom:var(--space-lg)}
+.wordmark{font-family:var(--font-display);font-weight:700;font-size:var(--fs-mega);letter-spacing:-3px;
+  line-height:.95;color:var(--fg)}
+.wordmark .cursor{color:var(--signal);animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.title-slide h1{font-family:var(--font-display);font-weight:700;font-size:var(--fs-h1);
+  line-height:1.04;letter-spacing:-2px;color:var(--fg);margin-top:var(--space-lg);max-width:18ch}
+.title-slide h1 .sig{color:var(--signal)}
+.title-slide .lede{font-size:var(--fs-lede);line-height:1.5;color:var(--fg-secondary);
+  max-width:64ch;margin-top:var(--space-lg)}
+.title-slide .lede strong{font-weight:500;color:var(--fg)}
+.title-meta{margin-top:var(--space-xl);font-family:var(--font-ui);font-size:var(--fs-tag);
+  color:var(--fg-muted);letter-spacing:.06em;display:flex;gap:var(--space-lg);flex-wrap:wrap}
+.title-meta b{color:var(--signal)}
+
+/* ================= 1 · PROBLEM ================= */
+.coldstart{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--space-md);margin-top:var(--space-xl)}
+@media(max-width:760px){.coldstart{grid-template-columns:1fr}}
+.cs{border:1px solid var(--border-default);border-radius:var(--radius-lg);background:var(--surface);
+  padding:var(--space-lg)}
+.cs .h{font-family:var(--font-ui);font-size:var(--fs-tag);text-transform:uppercase;letter-spacing:.1em;
+  color:var(--down);margin-bottom:var(--space-sm)}
+.cs .d{font-size:var(--fs-sm);color:var(--fg-secondary);line-height:1.55}
+
+/* ================= 2 · CONCEPT FILE ================= */
+.split{display:grid;grid-template-columns:1fr 1.1fr;gap:var(--space-xl);align-items:center;margin-top:var(--space-lg)}
+@media(max-width:900px){.split{grid-template-columns:1fr;gap:var(--space-lg)}}
+.filecard{border:1px solid var(--border-default);border-radius:var(--radius-md);
+  background:var(--surface);overflow:hidden}
+.filecard .bar{display:flex;align-items:center;gap:var(--space-sm);padding:10px 16px;
+  border-bottom:1px solid var(--border-default);background:var(--bg)}
+.filecard .bar .fn{font-family:var(--font-ui);font-size:var(--fs-sm);color:var(--fg-secondary)}
+.filecard .bar .ty{margin-left:auto;font-family:var(--font-ui);font-size:var(--fs-tag);color:var(--signal)}
+.filecard pre{font-family:var(--font-code);font-size:var(--fs-code);line-height:1.75;color:var(--fg);
+  padding:var(--space-lg);white-space:pre-wrap;word-break:break-word;overflow-x:hidden}
+.fm-k{color:var(--signal)} .fm-c{color:var(--fg-muted)}
+.fm-status{color:var(--up)} .fm-bind{color:var(--data-info)}
+
+/* ================= 3 · TYPES ================= */
+.types{display:grid;grid-template-columns:repeat(2,1fr);gap:var(--space-md);margin-top:var(--space-lg)}
+@media(max-width:900px){.types{grid-template-columns:1fr}}
+.type{display:grid;grid-template-columns:auto 1fr;gap:var(--space-md);align-items:center;
+  border:1px solid var(--border-default);border-radius:var(--radius-md);background:var(--surface);padding:var(--space-md) var(--space-lg)}
+.type .pfx{font-family:var(--font-display);font-weight:700;font-size:var(--fs-sm);color:var(--signal);
+  border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:4px 9px;min-width:54px;text-align:center}
+.type .n{font-size:var(--fs-body);color:var(--fg);font-weight:500;font-family:var(--font-body)}
+.type .e{font-size:var(--fs-sm);color:var(--fg-muted);line-height:1.45}
+
+/* ================= 4 · LIFECYCLE ================= */
+.lc-wrap{margin-top:var(--space-lg)}
+.track{display:flex;gap:var(--space-md);flex-wrap:wrap}
+.state{flex:1 1 0;min-width:150px;border:1px solid var(--border-default);border-radius:var(--radius-md);
+  padding:var(--space-md) var(--space-lg);background:var(--surface);opacity:.45;
+  transition:opacity var(--dur-slow) var(--ease-out),border-color var(--dur-slow) var(--ease-out),
+             background var(--dur-slow) var(--ease-out)}
+.state.lit{opacity:1}
+.state .nm{font-family:var(--font-ui);font-size:var(--fs-sm);font-weight:600;letter-spacing:.04em;margin-bottom:6px}
+.state .ds{font-size:var(--fs-tag);color:var(--fg-muted);line-height:1.45}
+.state.pending .nm{color:var(--warn)}     .state.pending.lit{border-color:var(--warn);background:var(--warn-bg)}
+.state.active .nm{color:var(--up)}         .state.active.lit{border-color:var(--up);background:var(--up-bg)}
+.state.superseded .nm{color:var(--data-info)} .state.superseded.lit{border-color:var(--data-info);background:var(--data-info-bg)}
+.state.deprecated .nm{color:var(--flat)}   .state.deprecated.lit{border-color:var(--flat)}
+.state.archived .nm{color:var(--fg-muted)} .state.archived.lit{border-color:var(--border-strong)}
+
+.demo{margin-top:var(--space-lg);border:1px solid var(--border-default);border-radius:var(--radius-md);
+  background:var(--surface);padding:var(--space-lg)}
+.demo-head{font-family:var(--font-ui);font-size:var(--fs-tag);text-transform:uppercase;letter-spacing:.1em;
+  color:var(--fg-muted);display:flex;justify-content:space-between;align-items:center;margin-bottom:var(--space-md)}
+.demo-head .live{color:var(--signal)}
+.concept{display:grid;grid-template-columns:56px 1fr auto;gap:var(--space-md);align-items:center;
+  border:1px solid var(--border-default);border-left-width:3px;border-radius:var(--radius-sm);
+  padding:var(--space-md);background:var(--bg);margin-bottom:var(--space-sm);
+  transition:opacity var(--dur-slow),border-color var(--dur-slow),filter var(--dur-slow)}
+.concept .id{font-family:var(--font-display);font-weight:700;font-size:var(--fs-tag);color:var(--fg-muted);text-align:center;line-height:1.3}
+.concept .ti{font-size:var(--fs-body);color:var(--fg);font-weight:500;font-family:var(--font-body)}
+.concept .fp{font-family:var(--font-code);font-size:var(--fs-tag);color:var(--fg-muted);margin-top:2px}
+.badge{font-family:var(--font-ui);font-size:var(--fs-tag);font-weight:600;letter-spacing:.06em;
+  padding:5px 12px;border-radius:var(--radius-sm);border:1px solid currentColor;white-space:nowrap;
+  transition:color var(--dur-slow),background var(--dur-slow)}
+.b-pending{color:var(--warn);background:var(--warn-bg)}
+.b-active{color:var(--up);background:var(--up-bg)}
+.b-superseded{color:var(--data-info);background:var(--data-info-bg)}
+.b-deprecated{color:var(--flat)}
+.concept.c-active{border-left-color:var(--up)}
+.concept.c-pending{border-left-color:var(--warn)}
+.concept.c-superseded{border-left-color:var(--data-info)}
+.concept.stale{filter:grayscale(.5);opacity:.5}
+.concept .note{grid-column:1/-1;font-family:var(--font-ui);font-size:var(--fs-tag);color:var(--data-info);
+  padding-left:72px;max-height:0;opacity:0;overflow:hidden;transition:max-height var(--dur-slow),opacity var(--dur-slow)}
+.concept .note.on{max-height:30px;opacity:1}
+.lc-cap{font-size:var(--fs-sm);color:var(--fg-secondary);min-height:24px;font-family:var(--font-body);margin-top:var(--space-sm)}
+.lc-cap .mk{font-family:var(--font-ui);color:var(--signal);font-weight:600}
+
+/* ================= 5 · LOOP ================= */
+.loop-split{display:grid;grid-template-columns:1.05fr .95fr;gap:var(--space-xl);align-items:center;margin-top:var(--space-lg)}
+@media(max-width:900px){.loop-split{grid-template-columns:1fr}}
+svg{width:100%;height:auto;display:block;overflow:visible}
+.clearbox{fill:none;stroke:var(--border-strong);stroke-width:1.2;stroke-dasharray:3 4;rx:12}
+.clearbox-lbl{fill:var(--fg-muted);font-family:var(--font-ui);font-size:11px;letter-spacing:.1em}
+.lp rect{fill:var(--surface);stroke:var(--border-strong);stroke-width:1.4;
+  transition:stroke var(--dur-base),fill var(--dur-base)}
+.lp.on rect{stroke:var(--signal);fill:var(--signal-bg)}
+.lp .t{fill:var(--fg);font-family:var(--font-display);font-size:14px;font-weight:600}
+.lp .s{fill:var(--fg-muted);font-family:var(--font-ui);font-size:9px;letter-spacing:.04em}
+.lp.on .s{fill:var(--fg-secondary)}
+.ed{fill:none;stroke:var(--border-strong);stroke-width:1.5;marker-end:url(#arrowhead)}
+.kgc circle{fill:var(--bg);stroke:var(--signal);stroke-width:1.6;
+  transition:stroke var(--dur-base)}
+.kgc.on circle{stroke-width:2.4}
+.kgc .t{fill:var(--signal);font-family:var(--font-ui);font-size:11px;font-weight:600;letter-spacing:.03em}
+.kgc .s{fill:var(--fg-muted);font-family:var(--font-ui);font-size:9px}
+.pulse{r:4.5;opacity:0}
+.pulse.sage{fill:var(--signal)}
+.pulse.amber{fill:var(--highlight)}
+.loop-legend li{list-style:none;margin-bottom:var(--space-md);padding-left:22px;position:relative;
+  font-size:var(--fs-body);line-height:1.6;color:var(--fg-secondary)}
+.loop-legend li::before{content:"›";position:absolute;left:0;color:var(--signal);font-family:var(--font-ui)}
+.loop-legend b{color:var(--fg);font-weight:500;font-family:var(--font-ui);font-size:.92em}
+.loop-legend .amber-note::before{content:"›";color:var(--highlight)}
+
+/* ================= 6 · CAP ================= */
+.layers{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--space-md);margin-top:var(--space-xl)}
+@media(max-width:900px){.layers{grid-template-columns:1fr}}
+.lyr{border:1px solid var(--border-default);border-radius:var(--radius-md);background:var(--surface);padding:var(--space-lg)}
+.lyr .k{font-family:var(--font-ui);font-size:var(--fs-tag);letter-spacing:.1em;text-transform:uppercase;color:var(--fg-muted)}
+.lyr .nm{font-family:var(--font-display);font-weight:600;font-size:var(--fs-h2);color:var(--fg);margin:8px 0 4px}
+.lyr .who{font-family:var(--font-ui);font-size:var(--fs-tag);color:var(--fg-muted);font-weight:400}
+.lyr .d{font-size:var(--fs-sm);color:var(--fg-secondary);line-height:1.55}
+.lyr.you{border-color:var(--highlight);background:var(--highlight-bg)}
+.lyr.you .nm{color:var(--highlight)}
+.cap-quote{font-family:var(--font-quote);font-style:italic;font-size:var(--fs-lede);line-height:1.4;
+  color:var(--fg);border-left:3px solid var(--highlight);padding-left:var(--space-lg);
+  margin-top:var(--space-xl);max-width:58ch}
+
+/* ================= 7 · INSTALL (closing) ================= */
+.install-slide{text-align:left}
+.install-slide .eyebrow{font-family:var(--font-ui);font-size:var(--fs-tag);letter-spacing:1.5px;
+  text-transform:uppercase;color:var(--fg-muted);margin-bottom:var(--space-lg)}
+.install-slide h1{font-family:var(--font-display);font-weight:700;font-size:var(--fs-mega);
+  letter-spacing:-2.5px;line-height:.98;color:var(--fg);margin-bottom:var(--space-lg)}
+.install-slide h1 .cursor{color:var(--signal);animation:blink 1.1s steps(1) infinite}
+.install-slide .sub{font-size:var(--fs-lede);line-height:1.5;color:var(--fg-secondary);
+  max-width:62ch;margin-bottom:var(--space-xl)}
+.install-slide .sub strong{font-weight:500;color:var(--fg)}
+.term-grid{display:grid;grid-template-columns:1.5fr 1fr;gap:var(--space-lg);align-items:start}
+@media(max-width:900px){.term-grid{grid-template-columns:1fr}}
+.term{border:1px solid var(--border-default);border-left:3px solid var(--signal);
+  border-radius:var(--radius-md);background:var(--surface);overflow:hidden}
+.term .bar{font-family:var(--font-ui);font-size:var(--fs-tag);color:var(--fg-muted);letter-spacing:.06em;
+  padding:10px 18px;border-bottom:1px solid var(--border-default);background:var(--bg)}
+.term pre{font-family:var(--font-code);font-size:var(--fs-code);line-height:1.9;color:var(--fg);
+  padding:var(--space-lg);white-space:pre-wrap;word-break:break-word;margin:0}
+.term .c{color:var(--fg-muted)}
+.term .cmd{color:var(--signal)}
+.term .em{color:var(--highlight)}
+.install-foot{margin-top:var(--space-xl);font-family:var(--font-ui);font-size:var(--fs-sm);
+  color:var(--fg-muted);letter-spacing:.04em;display:flex;gap:var(--space-lg);flex-wrap:wrap;align-items:center}
+.install-foot b{color:var(--signal);font-weight:600}
+.install-foot .pill{border:1px solid var(--border-strong);border-radius:var(--radius-sm);padding:4px 12px;color:var(--fg-secondary);text-decoration:none;transition:border-color var(--dur-base),color var(--dur-base)}
+.install-foot a.pill:hover{border-color:var(--signal);color:var(--fg)}
+.install-foot .cta{color:var(--signal);font-weight:600}
+
+/* ---------- nav chrome ---------- */
+.arrow{position:fixed;top:50%;transform:translateY(-50%);z-index:20;
+  width:clamp(44px,4vw,60px);height:clamp(44px,4vw,60px);
+  display:flex;align-items:center;justify-content:center;cursor:pointer;
+  background:transparent;border:none;color:var(--fg-muted);
+  font-family:var(--font-ui);font-size:clamp(22px,2.4vw,34px);
+  opacity:.35;transition:opacity var(--dur-base) var(--ease-out),color var(--dur-base)}
+.arrow:hover{opacity:1;color:var(--signal)}
+.arrow:disabled{opacity:.08;cursor:default}
+.arrow.prev{left:clamp(8px,1.5vw,28px)}
+.arrow.next{right:clamp(8px,1.5vw,28px)}
+
+.dots{position:fixed;bottom:clamp(20px,3.5vh,40px);left:50%;transform:translateX(-50%);z-index:20;
+  display:flex;gap:var(--space-sm);align-items:center}
+.dot{width:9px;height:9px;border-radius:50%;border:1px solid var(--border-strong);
+  background:transparent;cursor:pointer;padding:0;transition:background var(--dur-base),border-color var(--dur-base),transform var(--dur-base)}
+.dot:hover{border-color:var(--signal)}
+.dot.on{background:var(--signal);border-color:var(--signal);transform:scale(1.15)}
+
+.topbar{position:fixed;top:clamp(16px,3vh,30px);right:clamp(20px,4vw,48px);z-index:20;
+  display:flex;gap:var(--space-md);align-items:center}
+.toggle,.replay{font-family:var(--font-ui);font-size:var(--fs-tag);color:var(--fg-secondary);
+  border:1px solid var(--border-strong);background:var(--surface);border-radius:var(--radius-sm);
+  padding:6px 12px;cursor:pointer;letter-spacing:.04em;transition:border-color var(--dur-base)}
+.toggle:hover,.replay:hover{border-color:var(--signal)}
+.brand-mini{position:fixed;top:clamp(16px,3vh,30px);left:clamp(20px,4vw,48px);z-index:20;
+  font-family:var(--font-display);font-weight:700;font-size:var(--fs-sm);letter-spacing:-.5px;color:var(--fg-muted)}
+.brand-mini .c{color:var(--signal)}
+
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{
+  animation-duration:.001ms!important;transition-duration:.001ms!important}}
+</style>
+</head>
+<body>
+
+<div class="brand-mini">CLEAR<span class="c">_</span></div>
+<div class="topbar">
+  <button class="replay" id="replay" title="replay this slide's animation">↻ replay</button>
+  <button class="toggle" id="toggle">light / dark</button>
+</div>
+
+<div class="deck" id="deck">
+
+  <!-- ============ 0 · TITLE ============ -->
+  <section class="slide title-slide active" data-i="0">
+    <div class="slide-inner">
+      <div class="eyebrow">Context Layering &amp; Engineering for Agentic Resources</div>
+      <div class="wordmark">CLEAR<span class="cursor">_</span></div>
+      <h1>How CLEAR keeps an agent's memory <span class="sig">honest</span>.</h1>
+      <p class="lede">Giving a coding agent a markdown memory is the easy part. Keeping that memory from going
+        stale as the code moves on is the hard part, and it's the part most "memory" tools quietly skip. Here's the whole
+        system, <strong>one slide at a time</strong>.</p>
+      <div class="title-meta">
+        <span>v1.0 · Apache-2.0</span><span>Claude Code plugin</span><span>github.com/<b>QBall-Inc/clear</b></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 1 · PROBLEM ============ -->
+  <section class="slide" data-i="1">
+    <div class="slide-inner">
+      <div class="kicker"><span class="knum">1</span><span class="kname">The problem</span>
+        <span class="ktag">why agents drift on long projects</span></div>
+      <p class="prose">On anything bigger than a weekend project, a coding agent loses the plot. It starts every
+        session cold, re-derives decisions you already made, and (the worst one) confidently acts on guidance that
+        stopped being true three commits ago. A memory that never forgets the wrong things isn't memory. It's a liability.</p>
+      <div class="coldstart">
+        <div class="cs"><div class="h">cold start</div><div class="d">Session N+1 starts with nothing from session N. You re-explain the architecture every single morning.</div></div>
+        <div class="cs"><div class="h">re-derivation</div><div class="d">The same decisions get rediscovered, and sometimes reversed, because nothing wrote them down.</div></div>
+        <div class="cs"><div class="h">stale guidance</div><div class="d">Old patterns resurface after they've been superseded. A confidently wrong agent is worse than a forgetful one.</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 2 · CONCEPT FILE ============ -->
+  <section class="slide" data-i="2">
+    <div class="slide-inner">
+      <div class="kicker"><span class="knum">2</span><span class="kname">A concept is a file</span>
+        <span class="ktag">typed markdown, bound to code</span></div>
+      <div class="split">
+        <p class="prose">The unit of knowledge is one markdown file with structured frontmatter. The frontmatter
+          is the machine-read contract. The body is the human detail. No database, no server, just diffable files in your
+          repo that get reviewed in the same PR as the code. The <code>related_files</code> list binds a concept to the code
+          it concerns, so the moment you touch a bound file, its concepts surface on their own.</p>
+        <div class="filecard">
+          <div class="bar"><span class="fn">.clear/knowledge/TD-014.md</span><span class="ty">technical-decision</span></div>
+<pre><span class="fm-c">---</span>
+<span class="fm-k">id</span>:            TD-014
+<span class="fm-k">title</span>:         Cursor-based pagination for the public API
+<span class="fm-k">type</span>:          technical-decision
+<span class="fm-k">status</span>:        <span class="fm-status">active</span>
+<span class="fm-k">tags</span>:          [api, pagination, performance]
+<span class="fm-k">related_files</span>: <span class="fm-bind">[ src/api/list-handler.ts ]</span>
+<span class="fm-k">description</span>:   Offset broke on deep page loads; cursors are stable.
+<span class="fm-c">---</span></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 3 · TYPES ============ -->
+  <section class="slide" data-i="3">
+    <div class="slide-inner">
+      <div class="kicker"><span class="knum">3</span><span class="kname">Seven knowledge types</span>
+        <span class="ktag">closed set, on purpose</span></div>
+      <p class="prose">The type isn't a free-text tag. It's a closed, opinionated set, because a known type is what
+        lets the system treat a decision differently from a process or a lesson. Code is the first domain, not the only one.</p>
+      <div class="types">
+        <div class="type"><span class="pfx">TD</span><div><div class="n">Technical decision</div><div class="e">"Adopt JWT over session cookies for the gateway." The call, and the alternatives weighed.</div></div></div>
+        <div class="type"><span class="pfx">PAT</span><div><div class="n">Architectural pattern</div><div class="e">"Repository pattern wraps every data source." A reusable structure in the codebase.</div></div></div>
+        <div class="type"><span class="pfx">LES</span><div><div class="n">Lesson learned</div><div class="e">"The MCP server dropped tools over 200, so paginate the registry." A pitfall found the hard way.</div></div></div>
+        <div class="type"><span class="pfx">BR</span><div><div class="n">Business rule</div><div class="e">"Refunds are blocked after 90 days." A domain rule the software must honor.</div></div></div>
+        <div class="type"><span class="pfx">IW</span><div><div class="n">Institutional wiki</div><div class="e">Reference knowledge sourced from a canonical doc: the RFC, the runbook, the spec.</div></div></div>
+        <div class="type"><span class="pfx">PROC</span><div><div class="n">Process</div><div class="e">A recurring procedure: its trigger, frequency, and steps, like the release checklist.</div></div></div>
+        <div class="type"><span class="pfx">SH</span><div><div class="n">Stakeholder</div><div class="e">A person, team, service, or vendor, and what it owns. "Auth service · owned by Platform."</div></div></div>
+        <div class="type" style="border-style:dashed;opacity:.7"><span class="pfx" style="color:var(--fg-muted);border-style:dashed">+</span><div><div class="n">Beyond code (roadmap)</div><div class="e">People, organizations, and events as first-class primitives: the bridge past coding.</div></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 4 · LIFECYCLE ============ -->
+  <section class="slide" data-i="4">
+    <div class="slide-inner">
+      <div class="kicker"><span class="knum">4</span><span class="kname">The lifecycle</span>
+        <span class="ktag">the dimension OKF scopes out · animates on entry</span></div>
+      <p class="prose">This is the heart of it. Every concept carries a <strong>status</strong>, and that status is what
+        keeps the graph fresh instead of letting it rot. When a newer decision lands, the old one gets
+        <strong>superseded</strong>. When something just stops being true, it gets <strong>deprecated</strong>. Neither one
+        is deleted. Both are <strong>surfaced as stale</strong>, so the agent is never silently handed dead guidance.</p>
+      <div class="lc-wrap">
+        <div class="track" id="track">
+          <div class="state pending" data-s="pending"><div class="nm">pending</div><div class="ds">captured, provisional, awaiting review</div></div>
+          <div class="state active" data-s="active"><div class="nm">active</div><div class="ds">confirmed and in force, eligible to surface</div></div>
+          <div class="state superseded" data-s="superseded"><div class="nm">superseded</div><div class="ds">replaced by a newer concept, link both ways</div></div>
+          <div class="state deprecated" data-s="deprecated"><div class="nm">deprecated</div><div class="ds">no longer true, kept and surfaced as stale</div></div>
+          <div class="state archived" data-s="archived"><div class="nm">archived</div><div class="ds">removed from surfacing, terminal</div></div>
+        </div>
+        <div class="demo">
+          <div class="demo-head"><span>live · src/api/list-handler.ts</span><span class="live" id="liveTag">watching</span></div>
+          <div class="concept c-active" id="c-pat">
+            <div class="id">PAT<br>006</div>
+            <div><div class="ti">Repository pattern wraps every data source</div><div class="fp">↳ src/api/list-handler.ts</div></div>
+            <div class="badge b-active">active</div>
+          </div>
+          <div class="concept c-active" id="c-old">
+            <div class="id">TD<br>009</div>
+            <div><div class="ti">Offset pagination for the public API</div><div class="fp">↳ src/api/list-handler.ts</div></div>
+            <div class="badge b-active">active</div>
+            <div class="note" id="note-old">↳ superseded by TD-014 · surfaced as stale</div>
+          </div>
+          <div class="concept c-pending" id="c-new" style="opacity:0">
+            <div class="id">TD<br>014</div>
+            <div><div class="ti">Cursor-based pagination for the public API</div><div class="fp">↳ src/api/list-handler.ts</div></div>
+            <div class="badge b-pending">pending</div>
+          </div>
+          <div class="lc-cap" id="lcCap"><span class="mk">›</span> Entering the slide replays this. Or hit ↻ replay, top-right.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 5 · LOOP ============ -->
+  <section class="slide" data-i="5">
+    <div class="slide-inner">
+      <div class="kicker"><span class="knum">5</span><span class="kname">The loop that drives it</span>
+        <span class="ktag">plan → schedule → act → manage</span></div>
+      <div class="loop-split">
+        <svg id="loopSvg" viewBox="0 0 460 380" role="img" aria-label="The CLEAR loop inside the .clear folder, feeding a filesystem knowledge graph">
+          <defs>
+            <marker id="arrowhead" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0,1 L9,5 L0,9" fill="none" stroke="var(--border-strong)" stroke-width="1.4"></path>
+            </marker>
+          </defs>
+          <!-- .clear/ container box -->
+          <rect class="clearbox" x="14" y="26" width="432" height="338" rx="12"></rect>
+          <text class="clearbox-lbl" x="30" y="18">.clear/  ·  project state &amp; knowledge, on disk</text>
+
+          <!-- all loop content shifted right+up to sit inside the box with padding -->
+          <g transform="translate(20,-6)">
+          <!-- edges (drawn first, under nodes). All meet the KG. -->
+          <!-- plan -> schedule -->
+          <path class="ed" id="p_ps" d="M150,78 L214,78"></path>
+          <!-- schedule -> act -->
+          <path class="ed" id="p_sa" d="M300,100 Q330,140 270,166"></path>
+          <!-- act -> manage -->
+          <path class="ed" id="p_am" d="M214,188 L106,188"></path>
+          <!-- act -> KG (capture, the amber loop's downstroke) -->
+          <path class="ed" id="p_actkg" d="M214,196 Q236,250 244,286"></path>
+          <!-- KG -> act (serve, the amber loop's upstroke) -->
+          <path class="ed" id="p_kgact" d="M286,286 Q300,232 268,190"></path>
+          <!-- manage -> KG (prune) -->
+          <path class="ed" id="p_mankg" d="M70,212 Q60,300 214,308"></path>
+
+          <!-- nodes -->
+          <g class="lp" id="lp-plan" transform="translate(70,56)"><rect width="80" height="44" rx="8"/><text class="t" x="40" y="22" text-anchor="middle">plan</text><text class="s" x="40" y="34" text-anchor="middle">phases</text></g>
+          <g class="lp" id="lp-sched" transform="translate(214,56)"><rect width="92" height="44" rx="8"/><text class="t" x="46" y="22" text-anchor="middle">schedule</text><text class="s" x="46" y="34" text-anchor="middle">workpackages</text></g>
+          <g class="lp" id="lp-act" transform="translate(214,166)"><rect width="80" height="44" rx="8"/><text class="t" x="40" y="22" text-anchor="middle">act</text><text class="s" x="40" y="34" text-anchor="middle">build</text></g>
+          <g class="lp" id="lp-manage" transform="translate(12,166)"><rect width="92" height="44" rx="8"/><text class="t" x="46" y="22" text-anchor="middle">manage</text><text class="s" x="46" y="34" text-anchor="middle">handoff</text></g>
+
+          <!-- knowledge graph -->
+          <g class="kgc" id="lp-kg" transform="translate(206,286)"><circle cx="58" cy="34" r="50"/><text class="t" x="58" y="30" text-anchor="middle">knowledge</text><text class="t" x="58" y="42" text-anchor="middle">graph</text><text class="s" x="58" y="56" text-anchor="middle">(filesystem)</text></g>
+
+          <!-- pulses -->
+          <circle class="pulse sage" id="pulseSage"></circle>
+          <circle class="pulse amber" id="pulseAmber"></circle>
+          </g>
+        </svg>
+        <ul class="loop-legend">
+          <li><b>plan</b> : capture intent as phases CLEAR tracks across sessions.</li>
+          <li><b>schedule</b> : break it into trackable workpackages.</li>
+          <li><b>act</b> : build. Decisions &amp; lessons get captured right here, bound to the files you touch.</li>
+          <li class="amber-note"><b style="color:var(--highlight)">act ⇄ graph</b> : the live exchange. Capture writes knowledge in, the graph serves the right context back.</li>
+          <li><b>manage</b> : session handoff. The loop moving forward is what supersedes &amp; prunes the graph.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 6 · CAP ============ -->
+  <section class="slide cap" data-i="6">
+    <div class="slide-inner">
+      <div class="kicker"><span class="knum">6</span><span class="kname">Where OKF fits</span>
+        <span class="ktag">convergence, not a priority claim</span></div>
+      <p class="prose">In June 2026 Google open-sourced the <strong>Open Knowledge Format</strong>, a draft spec for
+        typed, resource-bound, markdown-native knowledge. It validates the model CLEAR has been running since 2025. The
+        honest read is three layers. OKF specifies a <strong>format</strong>. CKS adds the <strong>lifecycle</strong>.
+        CLEAR is the <strong>engine</strong> that lives it.</p>
+      <div class="layers">
+        <div class="lyr"><div class="k">Layer 1 · format</div><div class="nm">OKF <span class="who">· Google v0.1</span></div><div class="d">Typed, described, tagged, resource-bound, cross-linked markdown. Status, supersession and pruning are explicitly out of scope.</div></div>
+        <div class="lyr"><div class="k">Layer 2 · + lifecycle</div><div class="nm">CKS <span class="who">· the CLEAR spec</span></div><div class="d">Format parity, plus opinionated types and the full lifecycle: status, supersession, deprecation surfacing, pruning, provenance.</div></div>
+        <div class="lyr you"><div class="k">Layer 3 · the engine</div><div class="nm">CLEAR <span class="who">· shipped 2025</span></div><div class="d">Captures while you build, serves the right context at the right time, syncs knowledge to project state. The system that runs the spec.</div></div>
+      </div>
+      <blockquote class="cap-quote">The graph gives you the structure to traverse. The lifecycle keeps it true. Building the software is what maintains both.</blockquote>
+    </div>
+  </section>
+
+  <!-- ============ 7 · INSTALL (closing) ============ -->
+  <section class="slide install-slide" data-i="7">
+    <div class="slide-inner">
+      <div class="eyebrow">two commands · mirrors the standard Claude Code plugin flow</div>
+      <h1>Ready to install?<span class="cursor">_</span></h1>
+      <p class="sub">CLEAR installs via npm or the QBall-Inc plugin marketplace. Pick one, restart your session,
+        and run the guided setup.</p>
+      <div class="term-grid">
+        <div class="term">
+          <div class="bar">install the plugin</div>
+<pre><span class="c"># Option A — npm</span>
+<span class="cmd">claude</span> /plugin install npm:@qball-inc/clear
+
+<span class="c"># Option B — marketplace</span>
+<span class="cmd">claude</span> /plugin marketplace add QBall-Inc/plugins-market
+<span class="cmd">claude</span> /plugin install clear@qball-inc</pre>
+        </div>
+        <div class="term">
+          <div class="bar">then, guided setup</div>
+<pre><span class="c"># restart, then</span>
+<span class="em">/cf-init</span></pre>
+        </div>
+      </div>
+      <div class="install-foot">
+        <span class="cta">Get it here →</span>
+        <a class="pill" href="https://github.com/QBall-Inc/clear" target="_blank" rel="noopener">github.com/<b>QBall-Inc/clear</b></a>
+        <span>Apache-2.0</span>
+        <span>coding agents first, ported next. Issues &amp; PRs welcome</span>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<button class="arrow prev" id="prev" aria-label="previous slide">‹</button>
+<button class="arrow next" id="next" aria-label="next slide">›</button>
+<div class="dots" id="dots"></div>
+
+<script>
+(function(){
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const $=(s,r=document)=>r.querySelector(s);
+  const $$=(s,r=document)=>Array.from(r.querySelectorAll(s));
+  const wait=ms=>new Promise(r=>setTimeout(r,reduce?Math.min(ms,80):ms));
+
+  const slides=$$('.slide');
+  const N=slides.length;
+  let cur=0;
+
+  /* ---- dots ---- */
+  const dotsEl=$('#dots');
+  slides.forEach((_,i)=>{
+    const b=document.createElement('button');
+    b.className='dot'+(i===0?' on':''); b.setAttribute('aria-label','slide '+(i+1));
+    b.addEventListener('click',()=>go(i));
+    dotsEl.appendChild(b);
+  });
+  const dots=$$('.dot');
+
+  const prevBtn=$('#prev'), nextBtn=$('#next');
+  function updateChrome(){
+    dots.forEach((d,i)=>d.classList.toggle('on',i===cur));
+    prevBtn.disabled = cur===0;
+    nextBtn.disabled = cur===N-1;
+  }
+
+  let animToken=0; // cancels in-flight slide animations on navigation
+  function go(i){
+    if(i<0||i>=N||i===cur) {return;}
+    slides[cur].classList.remove('active');
+    cur=i;
+    slides[cur].classList.add('active');
+    updateChrome();
+    animToken++;                 // invalidate any running animation
+    const tok=animToken;
+    // trigger per-slide animations
+    if(cur===4) runLifecycle(tok);
+    if(cur===5) runLoop(tok);
+  }
+  function next(){ go(cur+1); }
+  function prev(){ go(cur-1); }
+
+  prevBtn.addEventListener('click',prev);
+  nextBtn.addEventListener('click',next);
+  window.addEventListener('keydown',e=>{
+    if(e.key==='ArrowRight'||e.key==='PageDown'){next();}
+    else if(e.key==='ArrowLeft'||e.key==='PageUp'){prev();}
+    else if(e.key==='Home'){go(0);}
+    else if(e.key==='End'){go(N-1);}
+  });
+
+  $('#toggle').addEventListener('click',()=>{
+    const el=document.documentElement;
+    el.dataset.theme = el.dataset.theme==='dark'?'light':'dark';
+  });
+  $('#replay').addEventListener('click',()=>{
+    animToken++; const tok=animToken;
+    if(cur===4) runLifecycle(tok);
+    else if(cur===5) runLoop(tok);
+  });
+
+  updateChrome();
+
+  /* =================================================================
+     SLIDE 4 — lifecycle animation
+     ================================================================= */
+  const states={}; $$('.state').forEach(el=>states[el.dataset.s]=el);
+  const cNew=$('#c-new'), cOld=$('#c-old'), noteOld=$('#note-old');
+  const badgeNew=cNew?$('.badge',cNew):null, badgeOld=cOld?$('.badge',cOld):null;
+  const lcCap=$('#lcCap'), liveTag=$('#liveTag');
+
+  function lit(s){ Object.values(states).forEach(e=>e.classList.remove('lit')); if(states[s]) states[s].classList.add('lit'); }
+  function setLcCap(html){ if(lcCap) lcCap.innerHTML='<span class="mk">›</span> '+html; }
+  function setBadge(el,cls,txt){ if(el){el.className='badge '+cls; el.textContent=txt;} }
+
+  function resetLifecycle(){
+    Object.values(states).forEach(e=>e.classList.remove('lit'));
+    if(cNew){cNew.style.opacity='0'; setBadge(badgeNew,'b-pending','pending');}
+    if(cOld){cOld.classList.remove('stale','c-superseded'); cOld.classList.add('c-active'); setBadge(badgeOld,'b-active','active');}
+    if(noteOld) noteOld.classList.remove('on');
+    if(liveTag) liveTag.textContent='watching';
+  }
+
+  async function runLifecycle(tok){
+    resetLifecycle();
+    await wait(450); if(tok!==animToken)return;
+    lit('active');
+    setLcCap('Two active concepts are bound to <code>list-handler.ts</code>.');
+    await wait(1500); if(tok!==animToken)return;
+
+    liveTag.textContent='act · capturing';
+    lit('pending');
+    if(cNew) cNew.style.opacity='1';
+    setLcCap('You switch to cursor pagination. <b style="color:var(--warn)">TD-014</b> is captured as <b style="color:var(--warn)">pending</b>.');
+    await wait(1900); if(tok!==animToken)return;
+
+    liveTag.textContent='review';
+    lit('active');
+    setBadge(badgeNew,'b-active','active');
+    setLcCap('Reviewed and promoted: <b style="color:var(--up)">pending → active</b>.');
+    await wait(1800); if(tok!==animToken)return;
+
+    liveTag.textContent='manage · pruning';
+    lit('superseded');
+    if(cOld){cOld.classList.remove('c-active'); cOld.classList.add('c-superseded','stale');}
+    setBadge(badgeOld,'b-superseded','superseded');
+    if(noteOld) noteOld.classList.add('on');
+    setLcCap('<b style="color:var(--data-info)">TD-009 → superseded</b> by TD-014. Recorded both ways, surfaced as stale.');
+    await wait(2100); if(tok!==animToken)return;
+
+    lit('deprecated');
+    setLcCap('Nothing is deleted. The old decision stays for history, and the agent now gets the <b style="color:var(--up)">fresh</b> one first.');
+    await wait(2000); if(tok!==animToken)return;
+
+    lit('active');
+    liveTag.textContent='fresh';
+    setLcCap('The graph pruned itself. You wrote code; the knowledge stayed honest.');
+  }
+
+  /* =================================================================
+     SLIDE 5 — loop animation (pulses travel the real SVG paths)
+     ================================================================= */
+  const svg=$('#loopSvg');
+  const nodes={
+    plan:$('#lp-plan'), sched:$('#lp-sched'), act:$('#lp-act'),
+    manage:$('#lp-manage'), kg:$('#lp-kg')
+  };
+  const pSage=$('#pulseSage'), pAmber=$('#pulseAmber');
+  const paths={
+    ps:$('#p_ps'), sa:$('#p_sa'), am:$('#p_am'),
+    actkg:$('#p_actkg'), kgact:$('#p_kgact'), mankg:$('#p_mankg')
+  };
+
+  function nodeOn(key,on){ if(nodes[key]) nodes[key].classList.toggle('on',on); }
+  function allOff(){ Object.keys(nodes).forEach(k=>nodeOn(k,false)); }
+
+  function movePulse(pulseEl, path, dur, tok){
+    return new Promise(res=>{
+      if(!path||!pulseEl){res();return;}
+      if(reduce){ res(); return; }
+      const len=path.getTotalLength();
+      const t0=performance.now();
+      pulseEl.style.opacity='1';
+      function step(now){
+        if(tok!==animToken){ pulseEl.style.opacity='0'; res(); return; }
+        const k=Math.min(1,(now-t0)/dur);
+        const pt=path.getPointAtLength(k*len);
+        pulseEl.setAttribute('cx',pt.x); pulseEl.setAttribute('cy',pt.y);
+        if(k<1) requestAnimationFrame(step);
+        else { pulseEl.style.opacity='0'; res(); }
+      }
+      requestAnimationFrame(step);
+    });
+  }
+
+  async function runLoop(tok){
+    allOff();
+    pSage.style.opacity='0'; pAmber.style.opacity='0';
+    await wait(400); if(tok!==animToken)return;
+
+    // 1. sage pulse: plan -> schedule -> act
+    nodeOn('plan',true);
+    await wait(300); if(tok!==animToken)return;
+    await movePulse(pSage, paths.ps, 700, tok); if(tok!==animToken)return;
+    nodeOn('plan',false); nodeOn('sched',true);
+    await wait(200); if(tok!==animToken)return;
+    await movePulse(pSage, paths.sa, 750, tok); if(tok!==animToken)return;
+    nodeOn('sched',false); nodeOn('act',true);
+    await wait(350); if(tok!==animToken)return;
+
+    // 2. amber pulse loops act <-> KG twice (the live exchange)
+    nodeOn('kg',true);
+    for(let n=0;n<2;n++){
+      await movePulse(pAmber, paths.actkg, 600, tok); if(tok!==animToken)return;  // capture (down)
+      await movePulse(pAmber, paths.kgact, 600, tok); if(tok!==animToken)return;  // serve (up)
+    }
+    await wait(250); if(tok!==animToken)return;
+
+    // 3. sage pulse: act -> manage
+    await movePulse(pSage, paths.am, 650, tok); if(tok!==animToken)return;
+    nodeOn('act',false); nodeOn('manage',true);
+    await wait(300); if(tok!==animToken)return;
+
+    // 4. sage pulse: manage -> KG (prune)
+    await movePulse(pSage, paths.mankg, 850, tok); if(tok!==animToken)return;
+    nodeOn('manage',false);
+    await wait(500); if(tok!==animToken)return;
+
+    // settle: loop runs again
+    if(tok===animToken) runLoop(tok);
+  }
+
+  // if the deck happens to load already on an animated slide
+  if(cur===4) runLifecycle(animToken);
+  if(cur===5) runLoop(animToken);
+})();
+</script>
+</body>
+</html>
