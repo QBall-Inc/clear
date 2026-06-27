@@ -49,6 +49,7 @@ exports.main = main;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const validation_1 = require("../../validation");
+const hooks_config_1 = require("../../init/hooks-config");
 const types_1 = require("../types");
 const context_hub_1 = require("../context-hub");
 const parser_1 = require("../../plan/parser");
@@ -76,10 +77,14 @@ const ACTIVE_PHASE_FORMAT_INCONSISTENT_PREFIX = 'Active phase display id is form
 // under the consumer project's .claude/ (sibling of .clear/), written by /cf-init.
 const CLAUDE_DIR = '.claude';
 const CLAUDE_SETTINGS_FILE = 'settings.json';
-// The CLEAR statusline script path suffix. Init configures settings.json statusLine.command
-// as path.join(pluginRoot, 'scripts', 'statusline.sh'); the configured command is an absolute
-// path ending in this suffix.
-const STATUSLINE_SCRIPT_SUFFIX = 'scripts/statusline.sh';
+// The Claude Code variable Init writes verbatim into statusLine.command; resolved here to
+// the project root (this.basePath) before fs checks, since fs cannot stat the literal.
+const STATUSLINE_PROJECT_DIR_VAR = '${CLAUDE_PROJECT_DIR}';
+// The CLEAR statusline script path SUFFIX, DERIVED from the single source of truth
+// (CLEAR_STATUSLINE_COMMAND = `${CLAUDE_PROJECT_DIR}/.clear/statusline.sh` in hooks-config.ts)
+// so a path-schema change there cannot silently desync this install check (CS2: No Magic).
+// CLEAR_STATUSLINE_COMMAND is `<VAR>/<suffix>`, so the suffix is everything after `<VAR>/`.
+const STATUSLINE_SCRIPT_SUFFIX = hooks_config_1.CLEAR_STATUSLINE_COMMAND.slice(STATUSLINE_PROJECT_DIR_VAR.length + 1);
 // Env vars /cf-init writes into .claude/settings.json env (the CLEAR_ENV_VARS set in
 // hooks-config). CLEAR_PLUGIN_ROOT is deliberately NOT in this set — it is persisted by the
 // SessionStart hook on the first session AFTER init (post-restart), not by init. The install
@@ -1382,12 +1387,37 @@ class DebugCLI {
             });
             return;
         }
-        if (!fs.existsSync(command)) {
+        // WP-P8.1: the configured command is the version-agnostic placeholder
+        // `${CLAUDE_PROJECT_DIR}/.clear/statusline.sh`. fs cannot stat the literal variable —
+        // resolve it to the project root (this.basePath, which the validator already knows)
+        // before the existence/executable checks, so a correct placeholder install does NOT
+        // false-flag as "missing on disk". Older absolute-path commands have no variable to
+        // substitute, so the resolved value == command for them (unchanged behaviour).
+        const resolvedScript = path.resolve(command.replace(STATUSLINE_PROJECT_DIR_VAR, this.basePath));
+        // CR SEC-001 confinement: the endsWith() suffix guard above runs on the UNRESOLVED
+        // command, so a crafted command like `${CLAUDE_PROJECT_DIR}/../../etc/.clear/statusline.sh`
+        // could pass it and then resolve OUTSIDE the project tree, letting the existence/permission
+        // probe below stat an arbitrary path. There is exactly one valid CLEAR statusline location —
+        // <projectRoot>/.clear/statusline.sh — so require the resolved path to equal it before any
+        // fs.* call. A traversal or otherwise-divergent path is reported as a non-CLEAR statusline,
+        // not stat'd.
+        const expectedScript = path.join(path.resolve(this.basePath), CLEAR_DIR, 'statusline.sh');
+        if (resolvedScript !== expectedScript) {
+            issues.push({
+                severity: 'warning',
+                domain: 'install',
+                message: `statusLine.command does not resolve to the CLEAR statusline script under .clear/ (resolved: ${resolvedScript}).`,
+                suggestion: 'Re-run /cf-init to set the CLEAR statusline. If you intentionally use a custom statusline, this can be ignored.',
+                autoRepairable: false
+            });
+            return;
+        }
+        if (!fs.existsSync(resolvedScript)) {
             issues.push({
                 severity: 'error',
                 domain: 'install',
-                message: `CLEAR statusline script is configured but missing on disk: ${command}.`,
-                suggestion: 'The plugin root may have moved. Re-run /cf-init with the correct --plugin-root, or restart Claude Code so CLEAR_PLUGIN_ROOT is refreshed.',
+                message: `CLEAR statusline script is configured but missing on disk: ${resolvedScript}.`,
+                suggestion: 'Re-run /cf-init to reprovision .clear/statusline.sh. The next session also auto-heals it (session start copies the script + migrates the command).',
                 autoRepairable: false
             });
             return;
@@ -1397,17 +1427,17 @@ class DebugCLI {
         // to avoid false-flagging a correct install).
         let executable = true;
         try {
-            executable = (fs.statSync(command).mode & 0o111) !== 0;
+            executable = (fs.statSync(resolvedScript).mode & 0o111) !== 0;
         }
         catch {
             executable = true;
         }
         if (!executable) {
-            const safeCommand = command.replace(/"/g, '\\"');
+            const safeCommand = resolvedScript.replace(/"/g, '\\"');
             issues.push({
                 severity: 'warning',
                 domain: 'install',
-                message: `CLEAR statusline script is present but not marked executable: ${command}.`,
+                message: `CLEAR statusline script is present but not marked executable: ${resolvedScript}.`,
                 suggestion: `Make it executable: chmod +x "${safeCommand}"`,
                 autoRepairable: false
             });

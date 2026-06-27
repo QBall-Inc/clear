@@ -20,6 +20,21 @@ Planned for upcoming releases:
 - **Harness adapters** — broader integration surfaces for orchestrating CLEAR
   alongside other tooling.
 
+## [1.0.2] - 2026-06-26
+
+### Fixed
+
+- **Status line survives plugin updates.** The status line is now configured with a
+  stable, project-relative path (`${CLAUDE_PROJECT_DIR}/.clear/statusline.sh`) rather
+  than an absolute path tied to a specific installed version. Previously the configured
+  path pointed into a versioned plugin directory and broke when the plugin updated to a
+  newer version. Existing installs migrate automatically on the first session after
+  updating — no re-initialization required.
+- **`cf-debug` no longer false-flags a correct status line.** The install diagnostic now
+  resolves the project-relative path before checking the script on disk, so it stops
+  reporting a "missing on disk" error for a status line that is, in fact, configured
+  correctly.
+
 ## [1.0.1] - 2026-06-25
 
 ### Fixed

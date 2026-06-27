@@ -314,6 +314,48 @@ if [ ! -f "${CLEAR_DIR}/.gitignore" ]; then
   fi
 fi
 
+# WP-P8.1 AC5: statusline path-stability self-heal. The settings.json statusLine command
+# was historically a version-baked absolute path under the plugin root (path.join(pluginRoot,
+# 'scripts','statusline.sh')) which BREAKS on every plugin update. v1.0.2 switches it to the
+# version-agnostic ${CLAUDE_PROJECT_DIR}/.clear/statusline.sh placeholder + a project-local
+# script copy. settings.json is consumer-owned (Claude Code never rewrites it on update), so a
+# plain plugin update does NOT auto-fix — this self-heal migrates pre-existing installs on the
+# first post-update session. Like the gitignore heal above it is NOT gated on RESUMING (an
+# existing consumer's first post-update session may be a resume). The gate is by ABSENCE of a
+# CLEAR command — there is no explicit --skip-statusline flag check here; it fires ONLY when the
+# settings.json statusLine.command is recognizably CLEAR's —
+#   (a) an OLD version-baked CLEAR command (absolute path ending /scripts/statusline.sh) → migrate; or
+#   (b) the placeholder is already set but .clear/statusline.sh is missing/content-stale → refresh.
+# Any other case — no statusLine at all (a --skip-statusline consumer) or a third-party command —
+# matches neither branch, so the consumer's choice is left untouched (never clobbered).
+# Non-fatal: a failure logs but never blocks session start.
+STATUSLINE_SETTINGS_JSON="${CWD}/.claude/settings.json"
+STATUSLINE_PLUGIN_SRC="${PLUGIN_ROOT}/scripts/statusline.sh"
+STATUSLINE_CONSUMER_DST="${CLEAR_DIR}/statusline.sh"
+NEED_STATUSLINE_HEAL=false
+if [ -f "$STATUSLINE_SETTINGS_JSON" ]; then
+  if grep -qE '"command"[[:space:]]*:[[:space:]]*"/[^"]*/scripts/statusline\.sh"' "$STATUSLINE_SETTINGS_JSON" 2>/dev/null; then
+    # (a) old version-baked CLEAR command → migrate to the placeholder.
+    NEED_STATUSLINE_HEAL=true
+  elif grep -qF '${CLAUDE_PROJECT_DIR}/.clear/statusline.sh' "$STATUSLINE_SETTINGS_JSON" 2>/dev/null; then
+    # (b) already the placeholder → refresh only if the local script is missing or content-stale.
+    if [ -f "$STATUSLINE_PLUGIN_SRC" ] && ! cmp -s "$STATUSLINE_CONSUMER_DST" "$STATUSLINE_PLUGIN_SRC" 2>/dev/null; then
+      NEED_STATUSLINE_HEAL=true
+    fi
+  fi
+fi
+if [ "$NEED_STATUSLINE_HEAL" = "true" ]; then
+  STATUSLINE_CLI_JS="${PLUGIN_ROOT}/build/infrastructure/init/cli/init-cli.js"
+  STATUSLINE_CLI_TS="${PLUGIN_ROOT}/src/infrastructure/init/cli/init-cli.ts"
+  if [ -f "$STATUSLINE_CLI_JS" ]; then
+    node "$STATUSLINE_CLI_JS" --ensure-statusline --cwd="$CWD" --plugin-root="$PLUGIN_ROOT" >/dev/null 2>&1 || \
+      echo "[session-init] ensure-statusline non-fatal failure (see audit log)" >&2
+  elif [ -f "$STATUSLINE_CLI_TS" ]; then
+    npx ts-node "$STATUSLINE_CLI_TS" --ensure-statusline --cwd="$CWD" --plugin-root="$PLUGIN_ROOT" >/dev/null 2>&1 || \
+      echo "[session-init] ensure-statusline non-fatal failure (see audit log)" >&2
+  fi
+fi
+
 # AC5 auto collect-metrics: capture finalized handoffs from prior sessions into metrics.csv.
 # Runs only on fresh session-init (not RESUMING). status: completed filter only — partial
 # handoffs are skipped to preserve metric quality (Bug 3.2 mitigation: 1-session lag

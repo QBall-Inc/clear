@@ -50,6 +50,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.detectProjectState = detectProjectState;
 exports.createDirectoryStructure = createDirectoryStructure;
 exports.ensureClearGitignore = ensureClearGitignore;
+exports.ensureClearStatusline = ensureClearStatusline;
 exports.createSession0State = createSession0State;
 exports.createSessionHistory = createSessionHistory;
 exports.createSyncState = createSyncState;
@@ -214,6 +215,56 @@ function ensureClearGitignore(projectDir) {
     // initialized projects). If .clear/ is somehow absent, fs.writeFileSync throws
     // ENOENT, which the non-fatal callers record without aborting init/session start.
     fs.writeFileSync(gitignorePath, CLEAR_GITIGNORE_BLOCK, 'utf-8');
+    return true;
+}
+// ==============================================================================
+// CLEAR-MANAGED statusline script (WP-P8.1 AC2/AC4)
+// ==============================================================================
+/**
+ * Copy (or refresh) the CLEAR statusline script into the consumer's
+ * .clear/statusline.sh and mark it executable.
+ *
+ * The settings.json statusLine command is the version-agnostic placeholder
+ * `${CLAUDE_PROJECT_DIR}/.clear/statusline.sh` (CLEAR_STATUSLINE_COMMAND, written by
+ * configureStatusline in hooks-config.ts). That project-relative path only resolves to
+ * a real script because this function copies the plugin's bundled scripts/statusline.sh
+ * into the consumer tree. A project-local copy (rather than a path under the plugin
+ * root) is what makes the wiring survive plugin updates — a version-baked plugin-root
+ * path drifts the moment the plugin's version directory changes.
+ *
+ * Always overwrites: a plugin update ships an updated statusline.sh, so re-copying
+ * refreshes the consumer's copy (the session-start self-heal gates the invocation on
+ * content drift, so this only runs when a refresh is actually needed). The script is
+ * CLEAR-managed — consumers should not hand-edit .clear/statusline.sh.
+ *
+ * Mirrors ensureClearGitignore: writes ONLY inside the consumer's .clear/ tree, refuses
+ * to follow a symlink at the destination, and is non-fatal to its callers.
+ *
+ * @param projectDir - Project (consumer repo) root
+ * @param pluginRoot - Plugin root (source of scripts/statusline.sh)
+ * @returns true when the script was copied/refreshed
+ * @throws if the source script is missing, or the destination is a symlink
+ */
+function ensureClearStatusline(projectDir, pluginRoot) {
+    const source = path.join(pluginRoot, 'scripts', 'statusline.sh');
+    if (!fs.existsSync(source)) {
+        throw new Error(`ensureClearStatusline: source statusline script not found: ${source}`);
+    }
+    const destDir = path.join(projectDir, '.clear');
+    const destPath = path.join(destDir, 'statusline.sh');
+    // Refuse to follow a symlink at the destination (mirrors the ensureClearGitignore
+    // guard — defense against a shared-env symlink redirecting the write outside .clear/).
+    if (fs.existsSync(destPath)) {
+        const stat = fs.lstatSync(destPath);
+        if (stat.isSymbolicLink()) {
+            throw new Error(`ensureClearStatusline: .clear/statusline.sh is a symlink (refusing to follow): ${destPath}`);
+        }
+    }
+    // The parent .clear/ is expected to exist (init scaffolds it; the session-start
+    // self-heal runs only for initialized projects). mkdir recursive is a cheap guard.
+    fs.mkdirSync(destDir, { recursive: true });
+    fs.copyFileSync(source, destPath);
+    fs.chmodSync(destPath, 0o755);
     return true;
 }
 // ==============================================================================

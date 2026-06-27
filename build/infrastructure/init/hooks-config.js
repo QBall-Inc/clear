@@ -44,7 +44,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CLAUDE_SETTINGS_PATH = void 0;
+exports.CLEAR_STATUSLINE_COMMAND = exports.CLAUDE_SETTINGS_PATH = void 0;
 exports.getClearHooks = getClearHooks;
 exports.mergeHooks = mergeHooks;
 exports.readClaudeSettings = readClaudeSettings;
@@ -345,17 +345,56 @@ function configureHooks(projectDir) {
     return newSettings;
 }
 /**
- * Configure CLEAR statusline in project settings.
+ * The CLEAR statusline command, written verbatim into .claude/settings.json.
  *
- * If no statusline exists: sets CLEAR's statusline.
- * If a statusline already exists: preserves it as CLEAR_ORIGINAL_STATUSLINE
- * env var, then sets CLEAR's statusline (passthrough mode).
+ * `${CLAUDE_PROJECT_DIR}` is a Claude Code variable substituted at statusline-render
+ * time to the project root, so the command stays valid across plugin updates — a
+ * version-baked absolute path under the plugin root drifts the moment the plugin's
+ * version directory changes. The referenced script is copied into the consumer's
+ * .clear/statusline.sh by ensureClearStatusline() (project-init.ts), so this
+ * project-relative path resolves to a real, self-contained script.
  *
- * @param projectDir - Project directory
- * @param pluginRoot - Plugin root directory (for statusline.sh path)
+ * Empirically proven by Bulwark's statusLine (skills/bulwark-statusline/SKILL.md:95),
+ * which has used `${CLAUDE_PROJECT_DIR}` across 6 months / multiple plugin versions.
+ */
+exports.CLEAR_STATUSLINE_COMMAND = '${CLAUDE_PROJECT_DIR}/.clear/statusline.sh';
+/**
+ * True when `command` is a CLEAR-OWNED statusline command that must be MIGRATED to the
+ * current placeholder form — NOT preserved as a third-party CLEAR_ORIGINAL_STATUSLINE.
+ * Covers the legacy version-baked form: an absolute path ending in `scripts/statusline.sh`
+ * (the pre-1.0.2 `path.join(pluginRoot, 'scripts', 'statusline.sh')` output, any version).
+ * Separators are normalized so the check holds on both POSIX and Windows consumers.
+ */
+function isLegacyClearStatuslineCommand(command) {
+    const normalized = command.replace(/\\/g, '/');
+    return path.isAbsolute(command) && normalized.endsWith('/scripts/statusline.sh');
+}
+/**
+ * Configure CLEAR's statusline command in the consumer's .claude/settings.json.
+ *
+ * Writes the version-agnostic placeholder (CLEAR_STATUSLINE_COMMAND). The referenced
+ * script is provisioned separately by ensureClearStatusline() (project-init.ts) — this
+ * function owns the settings.json statusLine key only.
+ *
+ * Existing-statusline classification:
+ *   - already the placeholder       → idempotent no-op (no restart needed)
+ *   - a legacy version-baked CLEAR   → MIGRATE to the placeholder WITHOUT preserving it as
+ *     command (old scripts/ path)       CLEAR_ORIGINAL_STATUSLINE (AC3: it is CLEAR's own
+ *                                        stale command, not a third-party statusline — else
+ *                                        the dead plugin-root path is re-invoked via
+ *                                        passthrough)
+ *   - any other existing command    → a genuine third-party statusline: preserve it as
+ *                                        CLEAR_ORIGINAL_STATUSLINE for passthrough
+ *   - none                          → set CLEAR's statusline
+ *
+ * Note: an already-preserved third-party CLEAR_ORIGINAL_STATUSLINE in env is left intact
+ * on the legacy-migration path (we never touch env there), so passthrough survives the
+ * old-baked → placeholder migration.
+ *
+ * @param projectDir - Project (consumer repo) root
  * @returns Object with `needsRestart` flag and optional `originalStatusline`
  */
-function configureStatusline(projectDir, pluginRoot) {
+function configureStatusline(projectDir) {
     let existingSettings;
     try {
         existingSettings = settingsExist(projectDir)
@@ -367,24 +406,26 @@ function configureStatusline(projectDir, pluginRoot) {
     }
     // Clone to avoid mutating the original (F1 fix)
     const settings = { ...existingSettings };
-    const clearStatuslineCommand = path.join(pluginRoot, 'scripts', 'statusline.sh');
     const existingStatusline = settings.statusLine;
+    const existingCommand = existingStatusline?.command;
     let originalStatusline = null;
-    // Check if CLEAR's statusline is already configured (idempotent)
-    if (existingStatusline?.command === clearStatuslineCommand) {
+    // Already on the placeholder form → idempotent no-op.
+    if (existingCommand === exports.CLEAR_STATUSLINE_COMMAND) {
         return { needsRestart: false, originalStatusline: null };
     }
-    if (existingStatusline?.command) {
-        // Preserve original statusline as env var for passthrough
-        originalStatusline = existingStatusline.command;
+    // Preserve a GENUINE third-party statusline for passthrough. A legacy version-baked
+    // CLEAR command is NOT third-party — migrate it silently (do not preserve), else the
+    // dead plugin-root path is re-invoked via the CLEAR_ORIGINAL_STATUSLINE passthrough.
+    if (existingCommand && !isLegacyClearStatuslineCommand(existingCommand)) {
+        originalStatusline = existingCommand;
         const env = { ...(settings.env ?? {}) };
         env['CLEAR_ORIGINAL_STATUSLINE'] = originalStatusline;
         settings.env = env;
     }
-    // Set CLEAR's statusline
+    // Set CLEAR's statusline (placeholder form).
     settings.statusLine = {
         type: 'command',
-        command: clearStatuslineCommand,
+        command: exports.CLEAR_STATUSLINE_COMMAND,
     };
     try {
         writeClaudeSettings(settings, projectDir);

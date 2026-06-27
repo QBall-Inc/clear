@@ -19,6 +19,7 @@ interface InitCliOptions {
     skipPrompt: boolean;
     skipStatusline: boolean;
     ensureGitignore: boolean;
+    ensureStatusline: boolean;
 }
 interface InitSummary {
     success: boolean;
@@ -41,6 +42,7 @@ export interface InitCliOutput {
     };
     knowledgeBootstrap?: SqliteBootstrapResult;
     gitignoreEnsured?: boolean;
+    statuslineEnsured?: boolean;
     error?: string;
 }
 export declare function runInitCLI(options: InitCliOptions): Promise<InitCliOutput>;

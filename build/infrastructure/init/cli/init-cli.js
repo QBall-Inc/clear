@@ -65,7 +65,7 @@ function withBootstrap(output, bootstrap) {
 // MAIN
 // ==============================================================================
 async function runInitCLI(options) {
-    const { cwd, pluginRoot, force, refreshConfig, restoreFromBackup, backupPath, skipPrompt, skipStatusline, ensureGitignore } = options;
+    const { cwd, pluginRoot, force, refreshConfig, restoreFromBackup, backupPath, skipPrompt, skipStatusline, ensureGitignore, ensureStatusline } = options;
     // WP-CB-D AC2: --ensure-gitignore — session-start self-heal. Authors (or
     // idempotently ensures) .clear/.gitignore for consumers initialized before the
     // managed-gitignore shipped. Non-destructive; touches ONLY .clear/.gitignore.
@@ -79,6 +79,31 @@ async function runInitCLI(options) {
             return {
                 status: 'error',
                 error: `ENSURE_GITIGNORE_FAILED: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            };
+        }
+    }
+    // WP-P8.1 AC4/AC5: --ensure-statusline — session-start self-heal for the statusline.
+    // Copies/refreshes .clear/statusline.sh from the current plugin root AND migrates the
+    // settings.json statusLine command to the version-agnostic placeholder. Non-destructive;
+    // touches ONLY .clear/statusline.sh + the settings.json statusLine key. Early-return like
+    // --ensure-gitignore: no full init, no bootstrap. Requires --plugin-root (the copy source),
+    // unlike --ensure-gitignore.
+    if (ensureStatusline) {
+        if (!pluginRoot) {
+            return {
+                status: 'error',
+                error: 'MISSING_PLUGIN_ROOT: --plugin-root is required for --ensure-statusline (it is the statusline copy source).',
+            };
+        }
+        try {
+            const written = (0, project_init_1.ensureClearStatusline)(cwd, pluginRoot);
+            (0, hooks_config_1.configureStatusline)(cwd);
+            return { status: 'success', statuslineEnsured: written };
+        }
+        catch (error) {
+            return {
+                status: 'error',
+                error: `ENSURE_STATUSLINE_FAILED: ${error instanceof Error ? error.message : 'Unknown error'}`,
             };
         }
     }
@@ -186,7 +211,11 @@ async function runInitCLI(options) {
         }, knowledgeBootstrap);
     }
     try {
-        const statuslineResult = (0, hooks_config_1.configureStatusline)(cwd, pluginRoot);
+        // WP-P8.1: copy the statusline script into .clear/statusline.sh (AC2) BEFORE pointing
+        // settings.json at the ${CLAUDE_PROJECT_DIR}/.clear/statusline.sh placeholder (AC1), so
+        // the configured command resolves to a real file the moment it is wired.
+        (0, project_init_1.ensureClearStatusline)(cwd, pluginRoot);
+        const statuslineResult = (0, hooks_config_1.configureStatusline)(cwd);
         return withBootstrap({
             status: 'success',
             init: mapInitResult(initResult),
@@ -217,6 +246,7 @@ function parseArgs() {
         skipPrompt: false,
         skipStatusline: false,
         ensureGitignore: false,
+        ensureStatusline: false,
     }, [
         // CR fix-batch F-SEC-1 (security): --cwd= flows into createBackup +
         // removeExistingClear under --reinit-clean. validateBasePath() rejects
@@ -266,6 +296,9 @@ function parseArgs() {
         // WP-CB-D AC2: --ensure-gitignore is the non-destructive session-start
         // self-heal path. Authors .clear/.gitignore only; ignores all init flags.
         { flag: '--ensure-gitignore', apply: (_v, o) => { o.ensureGitignore = true; } },
+        // WP-P8.1 AC4: --ensure-statusline is the non-destructive session-start self-heal
+        // for the statusline (copy .clear/statusline.sh + migrate the settings command).
+        { flag: '--ensure-statusline', apply: (_v, o) => { o.ensureStatusline = true; } },
     ]);
 }
 // Main execution — only run when invoked directly
@@ -309,6 +342,13 @@ if (require.main === module) {
                 '                               commits. Leaves all other .clear/ content',
                 '                               untouched. Used by session start to backfill',
                 '                               pre-existing projects.',
+                '  --ensure-statusline          Non-destructive self-heal: copies the CLEAR',
+                '                               statusline script into .clear/statusline.sh and',
+                '                               points settings.json at the version-agnostic',
+                '                               ${CLAUDE_PROJECT_DIR}/.clear/statusline.sh path so',
+                '                               the wiring survives plugin updates. Requires',
+                '                               --plugin-root. Used by session start to migrate',
+                '                               pre-existing installs.',
             ].join('\n')
         }));
         process.exit(0);

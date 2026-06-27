@@ -1,6 +1,6 @@
 {
   "name": "@qball-inc/clear",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Context Layered Engineering for Agentic Resources - Persistent memory and intelligent context management for Claude Code sessions",
   "main": "build/index.js",
   "scripts": {
@@ -34,14 +34,21 @@
   "keywords": [
     "claude-code",
     "claude-code-plugin",
+    "anthropic",
+    "claude",
     "context-management",
     "session-tracking",
     "knowledge-base",
+    "knowledge-graph",
     "workpackage",
     "automation",
     "handoff",
     "memory",
-    "planning"
+    "planning",
+    "ai-coding-assistant",
+    "ai-agents",
+    "llm-tools",
+    "code-intelligence"
   ],
   "author": "Ashay Kubal <https://ashaykubal.com>",
   "homepage": "https://github.com/QBall-Inc",
